@@ -24,6 +24,8 @@ jobs:
 
       - name: Verify apk package integrity
         run: |
+          mkdir -p /tmp/apkverify/etc/apk/keys /tmp/apkverify/lib/apk/db
+          : > /tmp/apkverify/etc/apk/world
           .tools/apk.static --root /tmp/apkverify verify --allow-untrusted dist/*.apk
           echo "apk verify OK"
 
