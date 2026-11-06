@@ -16,18 +16,29 @@ jobs:
       - name: Verify script syntax
         run: sh -n build.sh
 
+      - name: Import signing key (if configured)
+        env:
+          BYTE_SIGNING_KEY: ${{ secrets.BYTE_SIGNING_KEY }}
+        run: |
+          if [ -n "$BYTE_SIGNING_KEY" ]; then
+            mkdir -p .tools
+            printf '%s' "$BYTE_SIGNING_KEY" | base64 -d > .tools/signing.key
+            chmod 600 .tools/signing.key
+          fi
+
       - name: Build packages (apk + ipk)
         run: |
           ./build.sh
           echo "== artifacts =="
           ls -l dist/
 
-      - name: Verify apk package integrity
+      - name: Verify apk signature (trusted, no --allow-untrusted)
         run: |
-          mkdir -p /tmp/apkverify/etc/apk/keys /tmp/apkverify/lib/apk/db
-          : > /tmp/apkverify/etc/apk/world
-          .tools/apk.static --root /tmp/apkverify verify --allow-untrusted dist/*.apk
-          echo "apk verify OK"
+          rm -rf /tmp/apkverify
+          mkdir -p /tmp/apkverify/etc/apk/keys
+          cp dist/luci-app-byte-signing.pub /tmp/apkverify/etc/apk/keys/
+          .tools/apk.static --root /tmp/apkverify verify dist/*.apk
+          echo "apk verify OK (trusted ECDSA signature)"
 
       - uses: actions/upload-artifact@v4
         with:

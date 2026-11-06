@@ -9,6 +9,13 @@
 # match what the firmware's own feeds ship. apk-tools 3.x (APKv3) is required;
 # a static build is fetched on first run (override with APK_URL/APK_BIN).
 #
+# The apk is SIGNED with an ECDSA P-256 key (apk-tools 3 trusts PKCS8 PEM
+# keys). The private key is generated once into .tools/signing.key; the
+# matching public key is exported to dist/luci-app-byte-signing.pub. To
+# install on a router without --allow-untrusted, copy that public key to
+# /etc/apk/keys/ on the router first. Override with SIGN_KEY=/path/key.pem,
+# disable signing (untrusted apk) with BYTE_NO_SIGN=1.
+#
 # Usage: ./build.sh            # both formats
 #        ./build.sh ipk|apk    # one format
 set -eu
@@ -36,7 +43,7 @@ ARCH=all
 DESC="Single LuCI page under Tools to install, wire, inspect and undo the AdGuard Home + PassWall2 DNS chain. Ships the vendored upstream installer, so no runtime network fetch."
 URL="https://github.com/Ace1337z/luci-app-byte"
 
-# ---- static apk-tools 3.x, fetched once (used for verification only) ----
+# ---- static apk-tools 3.x, fetched once (used for building and verifying) ----
 APK_URL=${APK_URL:-https://dl-cdn.alpinelinux.org/alpine/edge/main/x86_64/apk-tools-static-3.0.9-r0.apk}
 APK_BIN=${APK_BIN:-.tools/apk.static}
 if [ ! -x "$APK_BIN" ]; then
@@ -47,6 +54,24 @@ if [ ! -x "$APK_BIN" ]; then
 	tar -xzf .tools/apkts3.apk -C .tools/apkts3
 	find .tools/apkts3 -name apk.static -exec install -m755 {} "$APK_BIN" \;
 	rm -rf .tools/apkts3 .tools/apkts3.apk
+fi
+
+# ---- signing key (APKv3, ECDSA P-256, PKCS8 PEM) ----
+SIGN_KEY=${SIGN_KEY:-.tools/signing.key}
+SIGN_PUBKEY=
+_sign_args=
+if [ "${BYTE_NO_SIGN:-0}" != 1 ]; then
+	if [ ! -s "$SIGN_KEY" ]; then
+		echo "generating ECDSA P-256 signing key $SIGN_KEY ..." >&2
+		mkdir -p "$(dirname "$SIGN_KEY")"
+		openssl genpkey -algorithm EC \
+			-pkeyopt ec_paramgen_curve:P-256 \
+			-out "$SIGN_KEY"
+		chmod 600 "$SIGN_KEY"
+	fi
+	SIGN_PUBKEY="$(dirname "$SIGN_KEY")/$(basename "$SIGN_KEY" .key).pub"
+	openssl pkey -in "$SIGN_KEY" -pubout -out "$SIGN_PUBKEY"
+	_sign_args="--sign-key $SIGN_KEY"
 fi
 
 # ---- stage the payload: htdocs -> /www, root -> / (mirrors luci.mk) ----
@@ -133,7 +158,8 @@ EOF
 	chmod 755 .tools/post-install
 
 	# SOURCE_DATE_EPOCH=0 is what package-pack.mk exports - keeps the apk
-	# reproducible across builds.
+	# reproducible across builds. $_sign_args adds --sign-key <key> when
+	# signing is enabled (empty otherwise).
 	SOURCE_DATE_EPOCH=0 "$APK_BIN" mkpkg \
 		--info "name:$NAME" \
 		--info "version:$APK_VERSION" \
@@ -146,7 +172,25 @@ EOF
 		--info "depends:luci-base rpcd libubox jsonfilter ubus" \
 		--script "post-install:.tools/post-install" \
 		--files .build-stage \
+		$_sign_args \
 		--output dist/"$NAME"-"$APK_VERSION".apk
+	if [ -n "$SIGN_PUBKEY" ]; then
+		cp "$SIGN_PUBKEY" dist/luci-app-byte-signing.pub
+		verify_apk
+	else
+		rm -f dist/luci-app-byte-signing.pub
+	fi
+}
+
+# verify_apk: check the built apk's signature against its own public key
+# (no --allow-untrusted), exactly as a router would with the key installed.
+verify_apk() {
+	vroot=.verify-root
+	rm -rf "$vroot"
+	mkdir -p "$vroot/etc/apk/keys"
+	cp "$SIGN_PUBKEY" "$vroot/etc/apk/keys/"
+	"$APK_BIN" --root "$vroot" verify dist/"$NAME"-"$APK_VERSION".apk
+	rm -rf "$vroot"
 }
 
 case "${1:-all}" in
@@ -159,3 +203,10 @@ esac
 rm -rf .build-stage
 echo
 ls -l dist/
+if [ -n "$SIGN_PUBKEY" ]; then
+	echo
+	echo "apk is signed (ECDSA P-256). On the router, trust it once:"
+	echo "  scp dist/luci-app-byte-signing.pub root@<router>:/etc/apk/keys/"
+	echo "then install without --allow-untrusted:"
+	echo "  apk add ./luci-app-byte-$APK_VERSION.apk"
+fi
