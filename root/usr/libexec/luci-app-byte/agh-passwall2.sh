@@ -315,6 +315,10 @@ STUB
 }
 
 run_official_installer() {
+    # Vendor installer refuses if its SysV unit exists from a prior run
+    # ("init already exists"). Drop it (but never a hand-written procd script)
+    # before invoking, and clean rc.d symlinks it may have left.
+    drop_vendor_sysv_unit
     agh_service_stub || { warn "cannot create the 'service' stub in $RUN_DIR"; return 1; }
     # -r: the vendor script refuses to touch an existing installation otherwise.
     # Check the directory, not the binary: a half-finished or corrupted unpack
@@ -366,6 +370,10 @@ install_agh_official() {
     agh_installed || die "vendor installer finished but $AGH_BIN is missing - aborted before touching DNS"
     v="$("$AGH_BIN" --version 2>/dev/null | head -n 1)"
     log "  - AdGuardHome installed: ${v:-version unknown}"
+    # Vendor finishes by daemonizing itself (-s run) as a self-test. That
+    # process (reparented to init) keeps :53 and :3000, which would make our
+    # procd instance die with "address already in use" at Step 6. Kill it now.
+    agh_kill_orphans
     drop_vendor_sysv_unit
 }
 
@@ -469,6 +477,32 @@ agh_service_ctl() {
         [ "$i" = "$seen" ] && continue
         seen="$i"
         "$i" "$act" >/dev/null 2>&1 || true
+    done
+}
+
+# Kill any AdGuardHome process not owned by a service unit (vendor installer
+# leaves one behind after its self-test). Walks /proc because OpenWrt ships
+# without pkill/killall.
+agh_kill_orphans() {
+    [ "$DRY" = 1 ] && return 0
+    for piddir in /proc/[0-9]*; do
+        pid="${piddir#/proc/}"
+        [ -r "$piddir/cmdline" ] || continue
+        cmd="$(tr '\0' ' ' <"$piddir/cmdline" 2>/dev/null)"
+        case "$cmd" in
+            *AdGuardHome*) ;;
+            *) continue ;;
+        esac
+        kill "$pid" 2>/dev/null || true
+    done
+    sleep 1
+    for piddir in /proc/[0-9]*; do
+        pid="${piddir#/proc/}"
+        [ -r "$piddir/cmdline" ] || continue
+        cmd="$(tr '\0' ' ' <"$piddir/cmdline" 2>/dev/null)"
+        case "$cmd" in
+            *AdGuardHome*) kill -9 "$pid" 2>/dev/null || true ;;
+        esac
     done
 }
 
@@ -601,7 +635,9 @@ http:
     insecure_enabled: false
   address: 0.0.0.0:3000
   session_ttl: 30d
-users: []
+users:
+- name: admin
+  password: \$2a\$10\$3F5L2w3K793o.HPXOgQXNuzBFPVqxT0//0eeq34TuX.9jph1UayhG
 auth_attempts: 5
 block_auth_min: 15
 http_proxy: ''
@@ -1039,6 +1075,15 @@ step_firewall() {
 
 step_restart() {
     log "Step 6/7: restart dnsmasq -> passwall2 -> adguardhome"
+    # Vendor installer ends by running the daemon once to verify it works.
+    # That process grabs :3000 and :53; if we don't stop it, our procd service
+    # hits "listen tcp :3000: bind: address already in use" on startup and dies
+    # before binding :53, which trips the DNS verification and rolls everything
+    # back. pkill/killall are not in OpenWrt base, so kill by pid from /proc.
+    agh_service_ctl stop || true
+    agh_kill_orphans
+    sleep 2
+
     initctl dnsmasq restart || die "dnsmasq restart failed"
     initctl passwall2 enable || true
     initctl passwall2 restart || warn "passwall2 restart failed"
@@ -1183,8 +1228,8 @@ step_summary() {
     rip="${rip%%/*}"
     [ -n "${rip:-}" ] || rip="<router-ip>"
     log "Next steps:"
-    log "  1) Open AdGuardHome UI: http://${rip}:3000 - create the admin login now"
-    log "     (until you do, anyone on the LAN can set it)"
+    log "  1) Open AdGuardHome UI: http://${rip}:3000 - login admin / password"
+    log "     (CHANGE THESE after first login!)"
     log "  2) Add/choose nodes in LuCI -> Services -> PassWall2"
     log "  3) Verify:  nslookup openwrt.org 127.0.0.1"
     if [ "$WATCHDOG" = 1 ] && [ -x "$WD_BIN" ]; then

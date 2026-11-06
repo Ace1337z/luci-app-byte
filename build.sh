@@ -91,7 +91,10 @@ stage() {
 		.build-stage/etc/uci-defaults/90-luci-app-byte
 }
 
-# ---- ipk: ar with debian-binary, control.tar.gz, data.tar.gz ----
+# ---- ipk: single-tar.gz format opkg reads since ~23.05
+# ---- (members: ./debian-binary, ./data.tar.gz, ./control.tar.gz).
+# ---- The old ar("!<arch>") layout is rejected by current opkg
+# ---- ("Malformed package file").
 build_ipk() {
 	stage
 	echo "== ipk: $NAME $IPK_VERSION"
@@ -133,8 +136,9 @@ EOF
 		tar $TAR_OPTS --exclude=./CONTROL -cf - . | gzip -n -9 >data.tar.gz
 		tar $TAR_OPTS -C CONTROL -cf - . | gzip -n -9 >control.tar.gz
 		echo 2.0 >debian-binary
-		ar -rcD ../dist/"$NAME"_"$IPK_VERSION"_"$ARCH".ipk \
-			debian-binary control.tar.gz data.tar.gz
+		# Modern opkg wants a single gzip'd tar of these three, in this order.
+		tar $TAR_OPTS -cf - ./debian-binary ./data.tar.gz ./control.tar.gz \
+			| gzip -n -9 >../dist/"$NAME"_"$IPK_VERSION"_"$ARCH".ipk
 		rm -f data.tar.gz control.tar.gz debian-binary
 	)
 	rm -rf .build-stage/CONTROL
