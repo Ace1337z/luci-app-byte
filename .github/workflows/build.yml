@@ -1,0 +1,53 @@
+name: build
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify script syntax
+        run: sh -n build.sh
+
+      - name: Build packages (apk + ipk)
+        run: |
+          ./build.sh
+          echo "== artifacts =="
+          ls -l dist/
+
+      - name: Verify apk package integrity
+        run: |
+          .tools/apk.static --root /tmp/apkverify verify --allow-untrusted dist/*.apk
+          echo "apk verify OK"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: luci-app-byte-packages
+          path: |
+            dist/*.apk
+            dist/*.ipk
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: luci-app-byte-packages
+          path: dist
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
