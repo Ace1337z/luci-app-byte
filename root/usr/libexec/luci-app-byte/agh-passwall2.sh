@@ -1,5 +1,5 @@
 #!/bin/sh
-# VENDORED_PIN=add9f30cd05b
+# VENDORED_PIN=08c180b
 # ==============================================================================
 #  OpenWrt + AdGuardHome + PassWall2 - conflict-free one-shot installer
 #  Repo: https://github.com/Ace1337z/openwrt-agh-passwall2
@@ -480,30 +480,29 @@ agh_service_ctl() {
     done
 }
 
-# Kill any AdGuardHome process not owned by a service unit (vendor installer
-# leaves one behind after its self-test). Walks /proc because OpenWrt ships
-# without pkill/killall.
+# Kill any AdGuardHome daemon process left running by the vendor installer's
+# self-test (-s run, reparented to init). Walks /proc because OpenWrt ships
+# without pkill/killall. Matches only the daemon invocation (binary path
+# followed by nothing, -s, or run) so an unrelated command that merely mentions
+# the path (tail/vi on a log or config) is never signalled.
 agh_kill_orphans() {
     [ "$DRY" = 1 ] && return 0
-    for piddir in /proc/[0-9]*; do
-        pid="${piddir#/proc/}"
-        [ -r "$piddir/cmdline" ] || continue
-        cmd="$(tr '\0' ' ' <"$piddir/cmdline" 2>/dev/null)"
-        case "$cmd" in
-            *AdGuardHome*) ;;
-            *) continue ;;
-        esac
-        kill "$pid" 2>/dev/null || true
-    done
+    _agh_kill_once() {
+        for piddir in /proc/[0-9]*; do
+            pid="${piddir#/proc/}"
+            [ -r "$piddir/cmdline" ] || continue
+            cmd="$(tr '\0' ' ' <"$piddir/cmdline" 2>/dev/null)"
+            case "$cmd" in
+                # the real daemon: binary path, optionally -s run/start
+                "$AGH_BIN"|"$AGH_BIN -s run"|"$AGH_BIN -s start"|"$AGH_BIN -s run "*|"$AGH_BIN --config "*)
+                    kill "$1" "$pid" 2>/dev/null || true ;;
+            esac
+        done
+    }
+    _agh_kill_once ""
     sleep 1
-    for piddir in /proc/[0-9]*; do
-        pid="${piddir#/proc/}"
-        [ -r "$piddir/cmdline" ] || continue
-        cmd="$(tr '\0' ' ' <"$piddir/cmdline" 2>/dev/null)"
-        case "$cmd" in
-            *AdGuardHome*) kill -9 "$pid" 2>/dev/null || true ;;
-        esac
-    done
+    _agh_kill_once "-9"
+    return 0
 }
 
 # sysupgrade keeps only /etc and the paths in sysupgrade.conf, so a vendor
