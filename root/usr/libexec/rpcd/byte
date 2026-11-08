@@ -265,7 +265,10 @@ do_status() {
 # Shared by do_setup/do_uninstall: start the installer detached with the given
 # arguments and hand back immediately.
 start_stage() {
-	local args="$1" rc
+	# Site policy: AdGuardHome binds IPv4 only and no health-watchdog cron is
+	# installed. The installer takes the address family from IPV6_ENABLE and
+	# skips its 2-minute cron with --no-watchdog.
+	local args="$1 --no-watchdog" rc
 	json_init
 	if setup_running; then
 		json_add_boolean "ok" 0
@@ -283,10 +286,10 @@ start_stage() {
 	printf '###BYTE_SETUP_MARK ###\n' >>"$LOG"
 	# shellcheck disable=SC2086
 	if command -v setsid >/dev/null 2>&1; then
-		setsid sh -c '"$0" '"$args"' >>"$1" 2>&1; echo "###BYTE_SETUP_EXIT:$?" >>"$1"' \
+		IPV6_ENABLE=0 setsid sh -c '"$0" '"$args"' >>"$1" 2>&1; echo "###BYTE_SETUP_EXIT:$?" >>"$1"' \
 			"$STAGE" "$LOG" </dev/null >/dev/null 2>&1 &
 	else
-		sh -c '"$0" '"$args"' >>"$1" 2>&1; echo "###BYTE_SETUP_EXIT:$?" >>"$1"' \
+		IPV6_ENABLE=0 sh -c '"$0" '"$args"' >>"$1" 2>&1; echo "###BYTE_SETUP_EXIT:$?" >>"$1"' \
 			"$STAGE" "$LOG" </dev/null >/dev/null 2>&1 &
 	fi
 	rc=$!
@@ -315,8 +318,19 @@ do_uninstall() {
 	local purge=0
 	json_load "$(cat)"
 	json_get_var purge purge
+	purge_supported() {
+		grep -q -- '--purge' "$STAGE" 2>/dev/null
+	}
 	case "$purge" in
-	1 | true | yes | on) start_stage "--uninstall --purge --yes" ;;
+	1 | true | yes | on)
+		# The feed-based installer lineage has no --purge and aborts with
+		# "unknown option" (exit 2), so only pass it when it exists.
+		if purge_supported; then
+			start_stage "--uninstall --purge --yes"
+		else
+			start_stage "--uninstall --yes"
+		fi
+		;;
 	*) start_stage "--uninstall --yes" ;;
 	esac
 }

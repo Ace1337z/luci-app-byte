@@ -1,5 +1,5 @@
 #!/bin/sh
-# VENDORED_PIN=add9f30cd05b
+# VENDORED_PIN=4a9e6e6966c9
 # ==============================================================================
 #  OpenWrt + AdGuardHome + PassWall2 - conflict-free one-shot installer
 #  Repo: https://github.com/Ace1337z/openwrt-agh-passwall2
@@ -11,11 +11,6 @@
 #               -> tcp://127.0.0.1:15353          PassWall2 DNS (CN/proxy split)
 #               -> .lan/.local/.home.arpa
 #                  -> 127.0.0.1:54                dnsmasq (DHCP + local names)
-#
-#  AdGuardHome comes from the vendor installer (scripts/install.sh), not from
-#  the feed: no luci-app-adguardhome, no 'adguardhome' package. The vendor
-#  script drops a SysV unit that OpenWrt cannot run, so this installer replaces
-#  it with a procd service that always passes --config/--work-dir.
 #
 #  Safety model:
 #    * every file touched is backed up next to itself (*.agh-pw.bak.<ts>) and
@@ -49,19 +44,7 @@ PW_CFG="${PW_CFG:-/etc/config/passwall2}"
 FW_CFG="${FW_CFG:-/etc/config/firewall}"
 INIT_D="${INIT_D:-/etc/init.d}"
 AGH_WORKDIR="${AGH_WORKDIR:-/var/lib/adguardhome}"
-# Vendor install layout: the upstream installer unpacks $AGH_ROOT/AdGuardHome.
-AGH_ROOT="${AGH_ROOT:-/opt}"
-AGH_BIN="${AGH_BIN:-${AGH_ROOT}/AdGuardHome/AdGuardHome}"
-AGH_INITD="${AGH_INITD:-${INIT_D}/adguardhome}"
-AGH_LINK="${AGH_LINK:-/usr/bin/AdGuardHome}"
-AGH_INSTALL_URL="${AGH_INSTALL_URL:-https://raw.githubusercontent.com/AdguardTeam/AdGuardHome/master/scripts/install.sh}"
-AGH_REINSTALL="${AGH_REINSTALL:-0}"    # 1 = re-download even if the binary exists
-AGH_TAKEOVER="${AGH_TAKEOVER:-1}"      # 1 = remove the feed 'adguardhome' package
-AGH_KEEP_SYSUPGRADE="${AGH_KEEP_SYSUPGRADE:-0}"  # 1 = keep $AGH_ROOT in sysupgrade backup
-AGH_MIN_FREE_KB="${AGH_MIN_FREE_KB:-61440}"      # ~60 MiB overlay for tarball + binary
-AGH_START="${AGH_START:-20}"           # procd start priority of our init script
-RC_ROOT="${RC_ROOT:-/etc}"             # vendor SysV rc symlinks live here
-SYSUPGRADE_CONF="${SYSUPGRADE_CONF:-/etc/sysupgrade.conf}"
+AGH_BIN="${AGH_BIN:-/usr/bin/AdGuardHome}"
 STATE_DIR="${STATE_DIR:-/etc/agh-pw-backup}"
 OVERLAY="${OVERLAY:-/overlay}"
 BOOT1="${BOOT1:-223.5.5.5}"            # bootstrap resolvers (plain IPv4, v4-only)
@@ -79,7 +62,6 @@ CRON_FILE="${CRON_FILE:-/etc/crontabs/root}"
 DRY=0
 UNINSTALL=0
 ASSUME=0
-PURGE=0
 DNSMASQ_FORWARD=0
 WATCHDOG=1
 
@@ -88,7 +70,6 @@ RUN_DIR="${TMPDIR:-/tmp}/agh-pw.$$"
 ROLLBACK_ARMED=0
 FW_ADDED=""
 AGH_PREV_RUNNING=0
-AGH_INITD_NEW=0
 IPV6=0
 
 # ---------------------------------------------------------------- helpers -----
@@ -111,8 +92,6 @@ Usage: install.sh [options]
 Options:
   --dry-run             show what would change, change nothing
   --uninstall           stop AdGuardHome and restore the previous DNS setup
-  --purge               with --uninstall: also delete $AGH_ROOT/AdGuardHome,
-                        the procd service and the /usr/bin symlink
   --dnsmasq-forward     also make dnsmasq forward to PassWall2 DNS (UCI,
                         persistent; off by default - AdGuardHome already does)
   --no-watchdog         do not install the 2-minute AdGuardHome health cron
@@ -125,14 +104,8 @@ Environment overrides:
   AGH_CACHE=16777216 AGH_RATELIMIT=0 IPV6_ENABLE=auto|1|0
   WD_BIN CRON_FILE
   AGH_DIR AGH_YAML AGH_UCI DHCP_CFG PW_CFG FW_CFG INIT_D AGH_WORKDIR
-  AGH_ROOT AGH_BIN AGH_INITD AGH_LINK AGH_INSTALL_URL AGH_START
-  AGH_REINSTALL AGH_TAKEOVER AGH_KEEP_SYSUPGRADE AGH_MIN_FREE_KB
-  STATE_DIR OVERLAY SYSUPGRADE_CONF
-  AGH_PW_SKIP_ROOT=1 AGH_PW_INSTALL_SCRIPT=<file> (tests only)
-
-AdGuardHome itself is installed by the vendor script
-(AdguardTeam/AdGuardHome master scripts/install.sh) into $AGH_ROOT, not from
-the feed. luci-app-adguardhome is not used; the upstream UI on :3000 is.
+  AGH_BIN STATE_DIR OVERLAY
+  AGH_PW_SKIP_ROOT=1 (tests only)
 
 Exit status: 0 ok, 1 error and rolled back, 2 aborted/no change.
 EOF
@@ -201,10 +174,6 @@ detect_ipv6() {
 
 initctl() {
     if [ ! -x "${INIT_D}/$1" ]; then
-        if [ "$DRY" = 1 ]; then
-            log "  [dry] would $2 ${INIT_D}/$1 (not present yet)"
-            return 0
-        fi
         warn "init script ${INIT_D}/$1 missing - skipping $2"
         return 1
     fi
@@ -273,246 +242,6 @@ pkg_install() {
     fi
     warn "neither opkg nor apk found"
     return 1
-}
-
-pkg_remove() {
-    p="$1"
-    if ! pkg_installed "$p"; then
-        log "  - $p: not installed"
-        return 0
-    fi
-    log "  - $p: removing"
-    if command -v opkg >/dev/null 2>&1; then
-        cmd opkg remove "$p"
-        return $?
-    fi
-    if command -v apk >/dev/null 2>&1; then
-        cmd apk del "$p"
-        return $?
-    fi
-    return 1
-}
-
-# ---------------------- AdGuardHome (vendor installer) ------------------------
-# The feed package and luci-app-adguardhome are gone. The vendor script
-# downloads a static binary and unpacks it into $AGH_ROOT/AdGuardHome.
-agh_installed() { [ -x "$AGH_BIN" ]; }
-
-# The vendor script finishes with `./AdGuardHome -s install`, which installs a
-# SysV unit and then runs `service AdGuardHome start`. OpenWrt has no `service`
-# binary, so that call fails and the vendor script DELETES the unpacked
-# directory and exits 1. Shadow it for the duration of the vendor run only;
-# procd supervises the real daemon afterwards.
-agh_service_stub() {
-    mkdir -p "$RUN_DIR/bin" 2>/dev/null || return 1
-    cat > "$RUN_DIR/bin/service" <<'STUB'
-#!/bin/sh
-# agh-pw: stub "service" for the vendor AdGuardHome installer on OpenWrt.
-# The real supervision is the procd script written by install.sh.
-exit 0
-STUB
-    chmod 755 "$RUN_DIR/bin/service"
-}
-
-run_official_installer() {
-    agh_service_stub || { warn "cannot create the 'service' stub in $RUN_DIR"; return 1; }
-    # -r: the vendor script refuses to touch an existing installation otherwise.
-    # Check the directory, not the binary: a half-finished or corrupted unpack
-    # also leaves a non-empty $AGH_ROOT/AdGuardHome behind.
-    set -- -v -o "$AGH_ROOT"
-    if [ -d "${AGH_ROOT}/AdGuardHome" ] && [ -n "$(ls -A "${AGH_ROOT}/AdGuardHome" 2>/dev/null)" ]; then
-        set -- "$@" -r
-    fi
-    if [ -n "${AGH_PW_INSTALL_SCRIPT:-}" ]; then
-        ( cd "$RUN_DIR" && PATH="$RUN_DIR/bin:$PATH" sh "$AGH_PW_INSTALL_SCRIPT" "$@" )
-        return $?
-    fi
-    # The vendor script downloads its tarball into $PWD: keep that on tmpfs
-    # instead of the overlay, and never let an empty download pipe into `sh -s`
-    # (that would exit 0 while doing nothing).
-    if command -v curl >/dev/null 2>&1; then
-        ( cd "$RUN_DIR" && { curl -s -S -L "$AGH_INSTALL_URL" || echo 'exit 1'; } \
-            | PATH="$RUN_DIR/bin:$PATH" sh -s -- "$@" )
-        return $?
-    fi
-    if command -v wget >/dev/null 2>&1; then
-        ( cd "$RUN_DIR" && { wget -q -O - "$AGH_INSTALL_URL" || echo 'exit 1'; } \
-            | PATH="$RUN_DIR/bin:$PATH" sh -s -- "$@" )
-        return $?
-    fi
-    warn "curl or wget is required to run the vendor AdGuardHome installer"
-    return 1
-}
-
-install_agh_official() {
-    if agh_installed && [ "$AGH_REINSTALL" != 1 ]; then
-        v="$("$AGH_BIN" --version 2>/dev/null | sed -n 's/^AdGuard [Hh]ome, version //p' | head -n 1)"
-        log "  - AdGuardHome: ${v:-present} ($AGH_BIN)"
-        return 0
-    fi
-    if [ "$DRY" = 1 ]; then
-        log "  [dry] would run $AGH_INSTALL_URL -> $AGH_ROOT/AdGuardHome"
-        return 0
-    fi
-    if [ "$AGH_REINSTALL" = 1 ] && agh_installed; then
-        log "  - AdGuardHome: reinstalling (AGH_REINSTALL=1)"
-    else
-        log "  - AdGuardHome: vendor install into $AGH_ROOT (downloads ~15 MB)"
-    fi
-    mkdir -p "$AGH_ROOT" 2>/dev/null || die "cannot create $AGH_ROOT"
-    if ! run_official_installer; then
-        die "vendor AdGuardHome installer failed (see output above). DNS is untouched."
-    fi
-    agh_installed || die "vendor installer finished but $AGH_BIN is missing - aborted before touching DNS"
-    v="$("$AGH_BIN" --version 2>/dev/null | head -n 1)"
-    log "  - AdGuardHome installed: ${v:-version unknown}"
-    drop_vendor_sysv_unit
-}
-
-# The vendor run leaves /etc/init.d/AdGuardHome (SysV, needs `service`) and, if
-# the directories exist, /etc/rc<N>.d/S50AdGuardHome symlinks. Remove only
-# non-procd units so a hand-written script is never deleted.
-drop_vendor_sysv_unit() {
-    f="${INIT_D}/AdGuardHome"
-    if [ -f "$f" ] && ! grep -q '/etc/rc.common' "$f" 2>/dev/null; then
-        rm -f "$f" && log "  - removed vendor SysV unit $f"
-    fi
-    for f in "${RC_ROOT}/rc0.d/K02AdGuardHome" "${RC_ROOT}/rc1.d/K02AdGuardHome" \
-             "${RC_ROOT}/rc2.d/S50AdGuardHome" "${RC_ROOT}/rc3.d/S50AdGuardHome" \
-             "${RC_ROOT}/rc4.d/S50AdGuardHome" "${RC_ROOT}/rc5.d/S50AdGuardHome" \
-             "${RC_ROOT}/rc6.d/K02AdGuardHome"; do
-        [ -e "$f" ] || [ -L "$f" ] || continue
-        rm -f "$f" && log "  - removed $f"
-    done
-}
-
-install_agh_initd() {
-    if [ -f "$AGH_INITD" ] && grep -q 'installed by openwrt-agh-passwall2' "$AGH_INITD" 2>/dev/null; then
-        log "  - procd service: present ($AGH_INITD)"
-        return 0
-    fi
-    if [ "$DRY" = 1 ]; then
-        log "  [dry] would write procd service $AGH_INITD"
-        return 0
-    fi
-    backup "$AGH_INITD"
-    mkdir -p "${AGH_INITD%/*}" 2>/dev/null || { warn "cannot create ${AGH_INITD%/*}"; return 1; }
-    if cat > "$AGH_INITD" <<INITD
-#!/bin/sh /etc/rc.common
-# installed by openwrt-agh-passwall2/install.sh
-# procd unit for the vendor AdGuardHome build; replaces the SysV unit that
-# AdGuardHome -s install writes (OpenWrt has no 'service' command).
-USE_PROCD=1
-START=${AGH_START}
-STOP=89
-BIN="${AGH_BIN}"
-CONF="${AGH_YAML}"
-WORKDIR="${AGH_WORKDIR}"
-AGH_PORT=${AGH_PORT}
-DNSMASQ_PORT=${DNSMASQ_PORT}
-INITD="${INIT_D}"
-
-start_service() {
-    if [ ! -x "\$BIN" ]; then
-        logger -t agh-pw "binary missing (\$BIN) - dnsmasq back on :53 so DNS keeps working"
-        if [ "\$(uci -q get dhcp.@dnsmasq[0].port)" = "\$DNSMASQ_PORT" ]; then
-            uci set 'dhcp.@dnsmasq[0].port=53'
-            uci commit dhcp
-            [ -x "\$INITD/dnsmasq" ] && "\$INITD/dnsmasq" restart >/dev/null 2>&1
-        fi
-        return 1
-    fi
-    mkdir -p "\$WORKDIR" 2>/dev/null
-    procd_open_instance
-    procd_set_param command "\$BIN" --config "\$CONF" --work-dir "\$WORKDIR"
-    procd_set_param respawn 3600 5 5
-    procd_set_param stdout 1
-    procd_set_param stderr 1
-    procd_close_instance
-}
-
-service_triggers() {
-    procd_add_reload_trigger 'adguardhome'
-}
-INITD
-    then
-        chmod 755 "$AGH_INITD" 2>/dev/null || warn "cannot chmod $AGH_INITD"
-        AGH_INITD_NEW=1
-        log "  - procd service written: $AGH_INITD"
-    else
-        warn "cannot write $AGH_INITD - AdGuardHome will not start on boot"
-    fi
-}
-
-install_agh_link() {
-    [ "$AGH_LINK" = "$AGH_BIN" ] && return 0
-    if [ -L "$AGH_LINK" ]; then
-        return 0
-    fi
-    if [ -e "$AGH_LINK" ]; then
-        # Real file: feed package leftover or an admin's own copy. Never clobber.
-        warn "$AGH_LINK is a real file (feed package leftover?) - left untouched"
-        return 0
-    fi
-    [ "$DRY" = 1 ] && { log "  [dry] would link $AGH_LINK -> $AGH_BIN"; return 0; }
-    mkdir -p "${AGH_LINK%/*}" 2>/dev/null
-    ln -s "$AGH_BIN" "$AGH_LINK" 2>/dev/null || warn "cannot link $AGH_LINK -> $AGH_BIN"
-}
-
-# Stop/disable AdGuardHome through every init script we may have touched: our
-# procd unit ($AGH_INITD) and the conventional path the vendor script used.
-agh_service_ctl() {
-    act="$1"
-    seen=""
-    for i in "$AGH_INITD" "${INIT_D}/adguardhome"; do
-        [ -f "$i" ] || continue
-        [ "$i" = "$seen" ] && continue
-        seen="$i"
-        "$i" "$act" >/dev/null 2>&1 || true
-    done
-}
-
-# sysupgrade keeps only /etc and the paths in sysupgrade.conf, so a vendor
-# install under /opt is wiped by a firmware upgrade. Keeping it works (DNS
-# survives the update) but the backup archive grows by the binary size and it
-# is built in /tmp (RAM) - opt in only on >=256 MB devices.
-set_sysupgrade_keep() {
-    line="${AGH_ROOT%/}/AdGuardHome/"
-    marker='# agh-pw: vendor AdGuardHome install, kept across sysupgrade'
-    conf="$SYSUPGRADE_CONF"
-    if [ ! -f "$conf" ]; then
-        [ "$AGH_KEEP_SYSUPGRADE" = 1 ] || return 0
-        if [ "$DRY" = 1 ]; then
-            log "  [dry] would add $line to $conf"
-            return 0
-        fi
-        : > "$conf" 2>/dev/null || { warn "cannot write $conf"; return 0; }
-    fi
-    present=0
-    grep -Fqx "$line" "$conf" 2>/dev/null && present=1
-    if [ "$AGH_KEEP_SYSUPGRADE" = 1 ]; then
-        if [ "$present" = 1 ]; then
-            log "  - sysupgrade keep: present ($line)"
-            return 0
-        fi
-        if [ "$DRY" = 1 ]; then
-            log "  [dry] would add $line to $conf"
-            return 0
-        fi
-        backup "$conf"
-        printf '%s\n%s\n' "$marker" "$line" >> "$conf"
-        log "  - sysupgrade keep: added $line (backup archive grows by ~50 MB)"
-        return 0
-    fi
-    [ "$present" = 1 ] || return 0
-    if [ "$DRY" = 1 ]; then
-        log "  [dry] would drop $line from $conf"
-        return 0
-    fi
-    backup "$conf"
-    grep -Fvx "$line" "$conf" | grep -Fvx "$marker" > "${conf}.agh-pw.new" 2>/dev/null
-    mv -f "${conf}.agh-pw.new" "$conf" 2>/dev/null || warn "cannot update $conf"
-    log "  - sysupgrade keep: dropped $line (re-run with AGH_KEEP_SYSUPGRADE=1 to keep it)"
 }
 
 # ------------------------- AdGuardHome YAML -----------------------------------
@@ -827,75 +556,34 @@ step_preflight() {
         log "  - dnsmasq: running on port $(dnsmasq_port)"
     fi
 
-    # Vendor build is ~50 MB unpacked plus a ~15 MB tarball: filling a small
-    # overlay bricks first boot.
-    if ! agh_installed; then
-        free_kb="$(df -k "$AGH_ROOT" 2>/dev/null | awk 'NR==2{print $4}')"
-        [ -n "${free_kb:-}" ] || free_kb="$(df -k "$OVERLAY" 2>/dev/null | awk 'NR==2{print $4}')"
+    # AGH package is ~20 MB unpacked; filling a 16 MB overlay bricks first boot
+    if ! pkg_installed adguardhome; then
+        free_kb="$(df -k "$OVERLAY" 2>/dev/null | awk 'NR==2{print $4}')"
         [ -n "${free_kb:-}" ] || free_kb="$(df -k / 2>/dev/null | awk 'NR==2{print $4}')"
-        log "  - free space on ${AGH_ROOT}: ${free_kb:-unknown} KiB"
-        if [ -n "${free_kb:-}" ] && [ "$free_kb" -lt "$AGH_MIN_FREE_KB" ]; then
-            die "need >=${AGH_MIN_FREE_KB} KiB free on ${AGH_ROOT} for the vendor AdGuardHome build (have ${free_kb} KiB). Nothing changed."
+        log "  - free space on ${OVERLAY}: ${free_kb:-unknown} KiB"
+        if [ -n "${free_kb:-}" ] && [ "$free_kb" -lt 20480 ]; then
+            die "need >=20 MiB free to install AdGuardHome (have ${free_kb} KiB). Nothing changed."
         fi
-        tmp_kb="$(df -k "${TMPDIR:-/tmp}" 2>/dev/null | awk 'NR==2{print $4}')"
-        if [ -n "${tmp_kb:-}" ] && [ "$tmp_kb" -lt 20480 ]; then
-            warn "${TMPDIR:-/tmp} has ${tmp_kb} KiB free - the vendor tarball needs ~15 MiB there (tmpfs = RAM)"
-        fi
-        log "  - AdGuardHome binary: $AGH_BIN (will be installed by the vendor script)"
-    else
-        log "  - AdGuardHome binary: $AGH_BIN"
     fi
 }
 
 step_packages() {
     log "Step 1/7: packages"
-    # PassWall2 first: when the third-party feed is missing we abort before
-    # touching anything else, so the "nothing changed" promise stays true.
+    pkg_installed adguardhome || pkg_install adguardhome || die "AdGuardHome install failed - see errors above"
+    [ -x "$AGH_BIN" ] || die "$AGH_BIN missing after install - wrong package?"
+    pkg_install luci-app-adguardhome || warn "luci-app-adguardhome not installed - CLI on :3000 still works"
+
     if ! pkg_installed passwall2 && ! pkg_installed luci-app-passwall2; then
         if ! pkg_install luci-app-passwall2; then
-            if [ "$DRY" = 1 ]; then
-                warn "PassWall2 is not installed and no package manager is usable; showing the plan anyway"
-            else
-                die "PassWall2 is not in the configured feeds.
+            die "PassWall2 is not in the configured feeds.
   Add the PassWall2 feed for your release (opkg:
   https://github.com/xiaorouji/openwrt-passwall-build, or the apk repo on
   apk-based releases), run 'opkg update', then:
       opkg install luci-app-passwall2
   Nothing was changed on this router."
-            fi
         fi
     fi
-    if [ "$DRY" != 1 ]; then
-        pkg_installed passwall2 || pkg_installed luci-app-passwall2 || die "PassWall2 still missing after install"
-    fi
-
-    # luci-app-adguardhome is no longer used: the vendor build ships its own UI
-    # on :3000 and the feed app assumes the feed package layout.
-    if pkg_installed luci-app-adguardhome; then
-        backup "$AGH_UCI"
-        if pkg_remove luci-app-adguardhome; then
-            log "  - luci-app-adguardhome dropped (vendor UI on :3000 replaces it)"
-        else
-            warn "cannot remove luci-app-adguardhome - remove it manually (harmless, unused)"
-        fi
-    fi
-    # The feed 'adguardhome' package ships /usr/bin/AdGuardHome + its own procd
-    # unit. Both would fight the vendor install; take it over and keep a backup
-    # of the config in case someone wants it back.
-    if [ "$AGH_TAKEOVER" = 1 ] && pkg_installed adguardhome; then
-        backup "$AGH_UCI"
-        backup "$AGH_YAML"
-        if pkg_remove adguardhome; then
-            log "  - feed package 'adguardhome' removed (vendor build takes over)"
-        else
-            warn "cannot remove the 'adguardhome' package - set AGH_TAKEOVER=0 to coexist"
-        fi
-    fi
-
-    install_agh_official
-    install_agh_initd
-    install_agh_link
-    set_sysupgrade_keep
+    pkg_installed passwall2 || pkg_installed luci-app-passwall2 || die "PassWall2 still missing after install"
 }
 
 step_agh_config() {
@@ -1162,8 +850,6 @@ step_summary() {
     printf '  dnsmasq port             : %s\n' "$(cget dhcp.@dnsmasq[0].port)"
     printf '  passwall2 dns_redirect   : %s\n' "$(cget passwall2.@global[0].dns_redirect)"
     printf '  passwall2 localhost_proxy: %s\n' "$(cget passwall2.@global[0].localhost_proxy)"
-    printf '  AdGuardHome binary       : %s\n' "$AGH_BIN"
-    printf '  AdGuardHome service      : %s\n' "$AGH_INITD"
     if [ "$DRY" = 1 ]; then
         printf '  mode                     : dry-run (nothing changed)\n'
         return 0
@@ -1172,12 +858,6 @@ step_summary() {
         printf '  AdGuardHome on :%s       : yes\n' "$AGH_PORT"
     else
         printf '  AdGuardHome on :%s       : NOT DETECTED\n' "$AGH_PORT"
-    fi
-    if [ "$AGH_KEEP_SYSUPGRADE" = 1 ]; then
-        printf '  sysupgrade keep          : %s/AdGuardHome/ (backup grows ~50 MB)\n' "${AGH_ROOT%/}"
-    else
-        printf '  sysupgrade keep          : no (binary is lost on sysupgrade; dnsmasq\n'
-        printf '                             returns to :53 automatically if it is gone)\n'
     fi
     rip="$(cget network.lan.ipaddr)"
     rip="${rip%%/*}"
@@ -1219,20 +899,16 @@ rollback() {
     uci -q commit firewall 2>/dev/null || true
     if [ "$AGH_PREV_RUNNING" = 0 ]; then
         if [ -f "$WD_BIN" ]; then
-            rm -f "$WD_BIN"
-            log "  removed $WD_BIN"
-        fi
-        if [ -f "$CRON_FILE" ] && grep -qs 'agh-pw-watchdog' "$CRON_FILE"; then
-            sed -i '/agh-pw-watchdog/d' "$CRON_FILE"
-            log "  removed watchdog cron entry"
-            "${INIT_D}/cron" restart >/dev/null 2>&1 || true
-        fi
-        agh_service_ctl stop
-        agh_service_ctl disable
+        rm -f "$WD_BIN"
+        log "  removed $WD_BIN"
     fi
-    if [ "$AGH_INITD_NEW" = 1 ] && [ -f "$AGH_INITD" ]; then
-        rm -f "$AGH_INITD"
-        log "  removed $AGH_INITD (created by this run)"
+    if [ -f "$CRON_FILE" ] && grep -qs 'agh-pw-watchdog' "$CRON_FILE"; then
+        sed -i '/agh-pw-watchdog/d' "$CRON_FILE"
+        log "  removed watchdog cron entry"
+        "${INIT_D}/cron" restart >/dev/null 2>&1 || true
+    fi
+    "${INIT_D}/adguardhome" stop 2>/dev/null || true
+        "${INIT_D}/adguardhome" disable 2>/dev/null || true
     fi
     "${INIT_D}/dnsmasq" restart 2>/dev/null || true
     warn "rollback done: dnsmasq should be back on :${AGH_PORT}. Check resolution: nslookup openwrt.org"
@@ -1245,11 +921,7 @@ do_uninstall() {
     log "Uninstall: restoring previous DNS configuration"
     if [ "$ASSUME" = 0 ]; then
         if [ -t 0 ]; then
-            if [ "$PURGE" = 1 ]; then
-                printf 'Stop AdGuardHome, restore DNS and DELETE %s? [y/N] ' "${AGH_ROOT}/AdGuardHome"
-            else
-                printf 'Stop AdGuardHome and restore the previous DNS setup? [y/N] '
-            fi
+            printf 'Stop AdGuardHome and restore the previous DNS setup? [y/N] '
             read -r answer
             case "$answer" in
                 y|Y|yes|YES) ;;
@@ -1297,26 +969,9 @@ do_uninstall() {
         log "  removed watchdog cron entry"
         "${INIT_D}/cron" restart >/dev/null 2>&1 || true
     fi
-    agh_service_ctl stop
-    agh_service_ctl disable
+    "${INIT_D}/adguardhome" stop 2>/dev/null || true
+    "${INIT_D}/adguardhome" disable 2>/dev/null || true
     log "  AdGuardHome stopped and disabled"
-
-    if [ "$PURGE" = 1 ]; then
-        AGH_KEEP_SYSUPGRADE=0
-        set_sysupgrade_keep
-        if [ -f "$AGH_INITD" ]; then
-            rm -f "$AGH_INITD"
-            log "  removed procd service $AGH_INITD"
-        fi
-        if [ -L "$AGH_LINK" ]; then
-            rm -f "$AGH_LINK"
-            log "  removed $AGH_LINK"
-        fi
-        if [ -d "${AGH_ROOT}/AdGuardHome" ]; then
-            rm -rf "${AGH_ROOT}/AdGuardHome"
-            log "  removed ${AGH_ROOT}/AdGuardHome"
-        fi
-    fi
 
     if [ "$(cget dhcp.@dnsmasq[0].port)" != "53" ]; then
         uci set 'dhcp.@dnsmasq[0].port=53'
@@ -1329,13 +984,7 @@ do_uninstall() {
     if [ -x "${INIT_D}/passwall2" ]; then
         "${INIT_D}/passwall2" restart >/dev/null 2>&1 || warn "passwall2 restart failed"
     fi
-    if [ "$PURGE" = 1 ]; then
-        log "Done. DNS restored and the vendor AdGuardHome build was deleted."
-    else
-        log "Done. AdGuardHome config restored; the vendor build was NOT deleted."
-        log "  Delete it with: sh $0 --uninstall --purge --yes"
-        log "  Binary: ${AGH_BIN}  service: ${AGH_INITD}"
-    fi
+    log "Done. AdGuardHome packages were NOT removed (opkg remove adguardhome)."
     log "Backups kept in $STATE_DIR (safe to delete after you are happy)."
 }
 
@@ -1344,7 +993,6 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --dry-run) DRY=1 ;;
         --uninstall|--rollback) UNINSTALL=1 ;;
-        --purge) PURGE=1 ;;
         --dnsmasq-forward) DNSMASQ_FORWARD=1 ;;
         --no-watchdog) WATCHDOG=0 ;;
         -y|--yes) ASSUME=1 ;;

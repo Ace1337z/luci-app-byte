@@ -89,10 +89,10 @@ return view.extend({
 			E('p', {}, [ _('This installs AdGuard Home (and its LuCI app if missing) from this firmware\'s own repository, then wires it to PassWall2 without DNS or port conflicts:') ]),
 			E('ul', { 'style': 'margin:0;padding-left:18px;font-size:12.5px;line-height:1.6' }, [
 				E('li', {}, [ _('dnsmasq moves to port 54, AdGuard Home takes port 53') ]),
-				E('li', {}, [ _('AdGuard upstream becomes PassWall2 DNS on 127.0.0.1:15353') ]),
+				E('li', {}, [ _('AdGuard upstream becomes dnsmasq on :54, which forwards to PassWall2 DNS') ]),
 				E('li', {}, [ _('.lan / .local / .home.arpa keep resolving through dnsmasq') ]),
 				E('li', {}, [ _('SafeSearch/parental filtering is turned off') ]),
-				E('li', {}, [ _('A rollback manifest is kept, and a health watchdog is installed') ])
+				E('li', {}, [ _('A rollback manifest is kept; IPv4 bind only, no watchdog cron') ])
 			]),
 			E('p', { 'class': 'byte-note' }, [ _('Existing configs are backed up before they are touched. Nothing is proxied for you: PassWall2 nodes are still yours to add.') ]),
 			E('div', { 'class': 'button-row' }, [
