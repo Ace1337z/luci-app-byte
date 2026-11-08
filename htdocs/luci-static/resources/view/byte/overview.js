@@ -5,7 +5,7 @@
 'require ui';
 
 var callStatus    = rpc.declare({ object: 'byte', method: 'status' });
-var callSetup     = rpc.declare({ object: 'byte', method: 'setup', params: [ 'dry_run' ] });
+var callSetup     = rpc.declare({ object: 'byte', method: 'setup', params: [ 'dry_run', 'username', 'password' ] });
 var callUninstall = rpc.declare({ object: 'byte', method: 'uninstall', params: [ 'purge' ] });
 var callAction    = rpc.declare({ object: 'byte', method: 'action', params: [ 'name' ] });
 var callLog       = rpc.declare({ object: 'byte', method: 'log', params: [ 'lines' ] });
@@ -85,6 +85,8 @@ return view.extend({
 	handleSetup: function(ev) {
 		var self = this;
 
+		self.setupUser = self.setupUser || 'admin';
+		self.setupPass = self.setupPass || '';
 		return ui.showModal(_('Install and wire AdGuard Home'), [
 			E('p', {}, [ _('This installs AdGuard Home (and its LuCI app if missing) from this firmware\'s own repository, then wires it to PassWall2 without DNS or port conflicts:') ]),
 			E('ul', { 'style': 'margin:0;padding-left:18px;font-size:12.5px;line-height:1.6' }, [
@@ -93,6 +95,27 @@ return view.extend({
 				E('li', {}, [ _('.lan / .local / .home.arpa keep resolving through dnsmasq') ]),
 				E('li', {}, [ _('SafeSearch/parental filtering is turned off') ]),
 				E('li', {}, [ _('A rollback manifest is kept; IPv4 bind only, no watchdog cron') ])
+			]),
+			E('div', { 'class': 'cbi-value' }, [
+				E('label', { 'class': 'cbi-value-title' }, [ _('Web admin user') ]),
+				E('div', { 'class': 'cbi-value-field' }, [
+					E('input', {
+						'type': 'text', 'class': 'cbi-input-text', 'value': self.setupUser,
+						'input': function(e) { self.setupUser = e.target.value; }
+					})
+				])
+			]),
+			E('div', { 'class': 'cbi-value' }, [
+				E('label', { 'class': 'cbi-value-title' }, [ _('Web admin password') ]),
+				E('div', { 'class': 'cbi-value-field' }, [
+					E('input', {
+						'type': 'password', 'class': 'cbi-input-password',
+						'placeholder': _('blank = generate a 16 character one'),
+						'value': self.setupPass,
+						'input': function(e) { self.setupPass = e.target.value; }
+					}),
+					E('div', { 'class': 'byte-note' }, [ _('Created through the AdGuard Home first-run API; a blank password is generated and saved to /etc/agh-pw-backup/agh-admin.txt.') ])
+				])
 			]),
 			E('p', { 'class': 'byte-note' }, [ _('Existing configs are backed up before they are touched. Nothing is proxied for you: PassWall2 nodes are still yours to add.') ]),
 			E('div', { 'class': 'button-row' }, [
@@ -198,7 +221,9 @@ return view.extend({
 			});
 		}
 
-		return call(mode === 'uninstall' ? 0 : (commit ? 1 : 0)).then(function(res) {
+		return call(mode === 'uninstall' ? 0 : (commit ? 1 : 0),
+			mode === 'setup' ? self.setupUser : '',
+			mode === 'setup' ? self.setupPass : '').then(function(res) {
 			if (!res || !res.ok) {
 				state.textContent = (res && res.message) || _('Could not start the installer.');
 				return;
@@ -276,6 +301,8 @@ return view.extend({
 				[ _('Web interface'), status.agh.web || '-' ],
 				[ _('DNS port'), status.agh.dns_port || '-' ],
 				[ _('Service'), status.agh.service === 'feed' ? _('feed package') : (status.agh.service === 'vendor' ? _('vendor build') : '-') ],
+				[ _('Web admin'), status.agh.admin ? _('configured') : _('not configured - set it in the installer') ],
+				[ _('Credentials'), status.agh.admin_file || '-' ],
 				[ _('Autostart'), status.agh.enabled ? _('enabled') : _('disabled') ]
 			]),
 			E('p', { 'class': 'byte-note' }, [ status.agh.installed

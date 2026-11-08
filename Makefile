@@ -7,14 +7,14 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-byte
-PKG_VERSION:=1.0.2
+PKG_VERSION:=1.0.3
 PKG_RELEASE:=1
 
 PKG_MAINTAINER:=Ace1337z
 PKG_LICENSE:=GPL-3.0-only
 
 LUCI_TITLE:=BYTE - AdGuard Home + PassWall2 one-page panel
-LUCI_DESCRIPTION:=Single LuCI page under Tools to install, wire, inspect and undo the AdGuard Home + PassWall2 DNS chain. Ships the vendored upstream installer, so no runtime network fetch.
+LUCI_DESCRIPTION:=Single LuCI page under Tools to install, wire, inspect and undo the AdGuard Home + PassWall2 DNS chain. Ships the vendored upstream installer (IPv4-only bind, first-run web admin through the AdGuard API), so no runtime network fetch.
 # luci-base: JS framework + resource loading. rpcd: the ubus exec plugin host.
 # libubox/jsonfilter: jshn.sh + jsonfilter used by the backend script.
 LUCI_DEPENDS:=+luci-base +rpcd +libubox +jsonfilter +ubus

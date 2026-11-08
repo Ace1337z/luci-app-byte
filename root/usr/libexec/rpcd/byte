@@ -157,6 +157,9 @@ pw_nodes() {
 pw_running() {
 	pidof -o %PPID Xray >/dev/null 2>&1 && return 0
 	pidof Xray >/dev/null 2>&1 && return 0
+	# PassWall2 26.x ships its own binary as /tmp/etc/passwall2/bin/xray.
+	pidof -o %PPID xray >/dev/null 2>&1 && return 0
+	pidof xray >/dev/null 2>&1 && return 0
 	pidof v2ray >/dev/null 2>&1 && return 0
 	[ -s /var/run/passwall2.pid ] && return 0
 	return 1
@@ -244,6 +247,8 @@ do_status() {
 	json_add_string "service" "$svckind"
 	json_add_string "web" "${aghweb:-}"
 	json_add_string "dns_port" "${aghdns:-}"
+	json_add_int "admin" "$(grep -q '^users: \[\]' "$AGH_YAML" 2>/dev/null && echo 0 || echo 1)"
+	json_add_string "admin_file" "$([ -f /etc/agh-pw-backup/agh-admin.txt ] && echo /etc/agh-pw-backup/agh-admin.txt || echo '')"
 	json_close_object
 	json_add_object "dns"
 	json_add_string "dnsmasq_port" "${dport:-53}"
@@ -304,9 +309,15 @@ start_stage() {
 # polls "log" to stream the output into a terminal view. dry_run=1 adds
 # --dry-run so the run reports what it would change and changes nothing.
 do_setup() {
-	local dry=0
+	local dry=0 user="" pass=""
 	json_load "$(cat)"
 	json_get_var dry dry_run
+	json_get_var user username
+	json_get_var pass password
+	# Forwarded to the installer as AGH_USER/AGH_PASS. Exporting is enough:
+	# start_stage detaches the child with setsid, which inherits the env.
+	if [ -n "${user:-}" ]; then export AGH_USER="$user"; else unset AGH_USER; fi
+	if [ -n "${pass:-}" ]; then export AGH_PASS="$pass"; else unset AGH_PASS; fi
 	case "$dry" in
 	1 | true | yes | on) dry=1 ;;
 	*) dry=0 ;;

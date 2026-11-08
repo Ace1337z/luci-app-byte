@@ -18,7 +18,14 @@ LAN clients → router :53 → AdGuard Home → dnsmasq :54 → PassWall2 DNS
   vendored and pinned (see `VENDORED_PIN=` header in the script), so an
   upstream change can never silently alter the behaviour of the panel.
 - **Site policy**: the panel always runs the installer with `IPV6_ENABLE=0`
-  (AdGuardHome binds IPv4 only) and `--no-watchdog` (no 2-minute health cron).
+  (AdGuardHome binds the LAN IPv4 plus 127.0.0.1 only - a plain `0.0.0.0` makes
+  AdGuardHome open a dual-stack `[::]` socket) and `--no-watchdog` (no 2-minute
+  health cron).
+- **Web admin**: the install dialog takes a user name and password; both are
+  handed to the installer, which creates the account through AdGuardHome's own
+  first-run `/control/install/configure` API. A blank password is generated
+  (16 characters) and written to `/etc/agh-pw-backup/agh-admin.txt` (0600),
+  and the credentials also appear in the setup log.
 - **Dry run / undo**: `--dry-run` and `--uninstall` are always exposed.
   `--purge` is passed only when the vendored installer supports it; the
   feed-based installer lineage does not, so Purge degrades to plain uninstall.
@@ -27,7 +34,7 @@ LAN clients → router :53 → AdGuard Home → dnsmasq :54 → PassWall2 DNS
 
 | Action | What happens |
 | --- | --- |
-| Install and wire | Installs `adguardhome` + `luci-app-adguardhome` from the configured feed if missing, moves dnsmasq to :54, points AdGuard at dnsmasq (:54) which forwards to PassWall2 DNS, keeps `.lan`/`.local`/`.home.arpa` local, disables SafeSearch. IPv4 bind only, no watchdog cron |
+| Install and wire | Installs `adguardhome` + `luci-app-adguardhome` from the configured feed if missing, moves dnsmasq to :54, points AdGuard at dnsmasq (:54) which forwards to PassWall2 DNS, keeps `.lan`/`.local`/`.home.arpa` local, disables SafeSearch, creates the web admin through the first-run API. IPv4 bind only, no watchdog cron |
 | Dry run first | Runs the same installer with `--dry-run` — shows what would change, changes nothing |
 | Undo wiring | `--uninstall`: dnsmasq back to :53, firewall rules removed, config kept |
 | Purge (with undo) | Passed only if the vendored installer supports `--purge` (feed-based lineage does not; Purge then equals Undo) |
@@ -47,6 +54,8 @@ auto-added** — that is always done by you in PassWall2.
   `adguardhome` (and ideally `luci-app-adguardhome`) — the installer pulls the
   daemon from that feed, it does not download a vendor tarball
 - PassWall2 installed and running
+- A `curl` or feature-compatible `wget` on the device for the first-run admin
+  call (both are present on stock OpenWrt images)
 
 ## Install into a firmware build
 
@@ -86,6 +95,16 @@ root/usr/share/rpcd/acl.d/luci-app-byte.json      rpcd ACL (read + write verbs)
 
 `luci.mk` installs `./htdocs` → `/www` and `./root` → `/`, so no custom
 `Package/install` block is required.
+
+## Troubleshooting
+`apk add` failing with `unable to select packages: luci-app-byte (no such
+package): required by: world[luci-app-byte]` means the package was once added
+to `/etc/apk/world` by hand. No feed provides it, so every `apk` transaction
+aborts until that line is removed:
+```sh
+grep -v '^luci-app-byte$' /etc/apk/world > /tmp/world && mv /tmp/world /etc/apk/world
+```
+The panel does not need the package manager entry: it only ships files.
 
 ## License
 
