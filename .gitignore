@@ -1,6 +1,0 @@
-dist/
-.build-stage/
-.verify-root/
-.tools/
-*.ipk
-*.apk
