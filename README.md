@@ -18,9 +18,9 @@ LAN clients → router :53 → AdGuard Home → dnsmasq :54 → PassWall2 DNS
   vendored and pinned (see `VENDORED_PIN=` header in the script), so an
   upstream change can never silently alter the behaviour of the panel.
 - **Site policy**: the panel always runs the installer with `IPV6_ENABLE=0`
-  (AdGuardHome binds the LAN IPv4 plus 127.0.0.1 only - a plain `0.0.0.0` makes
-  AdGuardHome open a dual-stack `[::]` socket) and `--no-watchdog` (no 2-minute
-  health cron).
+  and `--no-watchdog` (no 2-minute health cron). Active listeners are then IPv4
+  only: DNS on the LAN IPv4 plus `127.0.0.1`, web UI on `<lan-ip>:3000` - a
+  plain `0.0.0.0` makes AdGuardHome open a dual-stack `[::]` socket.
 - **Web admin**: the install dialog takes a user name and password; both are
   handed to the installer, which creates the account through AdGuardHome's own
   first-run `/control/install/configure` API. A blank password is generated
@@ -34,7 +34,7 @@ LAN clients → router :53 → AdGuard Home → dnsmasq :54 → PassWall2 DNS
 
 | Action | What happens |
 | --- | --- |
-| Install and wire | Installs `adguardhome` + `luci-app-adguardhome` from the configured feed if missing, moves dnsmasq to :54, points AdGuard at dnsmasq (:54) which forwards to PassWall2 DNS, keeps `.lan`/`.local`/`.home.arpa` local, disables SafeSearch, creates the web admin through the first-run API. IPv4 bind only, no watchdog cron |
+| Install and wire | Installs `adguardhome` + `luci-app-adguardhome` from the configured feed if missing, moves dnsmasq to :54, points AdGuard at dnsmasq (:54) which forwards to PassWall2 DNS, keeps `.lan`/`.local`/`.home.arpa` local, disables SafeSearch, creates the web admin through the first-run API. IPv4-only DNS and web listeners, no watchdog cron |
 | Dry run first | Runs the same installer with `--dry-run` — shows what would change, changes nothing |
 | Undo wiring | `--uninstall`: dnsmasq back to :53, firewall rules removed, config kept |
 | Purge (with undo) | Passed only if the vendored installer supports `--purge` (feed-based lineage does not; Purge then equals Undo) |
@@ -105,6 +105,11 @@ aborts until that line is removed:
 grep -v '^luci-app-byte$' /etc/apk/world > /tmp/world && mv /tmp/world /etc/apk/world
 ```
 The panel does not need the package manager entry: it only ships files.
+
+### Web UI is not on 127.0.0.1
+With IPv6 disabled the UI listens on `<lan-ip>:3000` only. A local `curl` from
+the router must use the LAN address (`http://192.168.1.1:3000/control/status`),
+not `127.0.0.1`, or it will be refused.
 
 ## License
 
