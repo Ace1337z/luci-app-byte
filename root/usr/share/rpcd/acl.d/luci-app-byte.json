@@ -1,19 +1,35 @@
 {
 	"luci-app-byte": {
-		"description": "BYTE panel: AdGuard Home install/status, DNS chain and system state",
+		"description": "BYTE panel: AdGuard Home install/status/password, the DNS chain, the IPv6 uplink switch and system state",
 		"read": {
 			"ubus": {
-				"byte": [ "status", "log" ],
-				"network.interface.wan": [ "status" ],
-				"system": [ "info", "board" ]
+				"byte": [
+					"status",
+					"log"
+				],
+				"network.interface.wan": [
+					"status"
+				],
+				"system": [
+					"info",
+					"board"
+				]
 			},
 			"file": {
-				"/tmp/luci-app-byte-setup.log": [ "read" ]
+				"/tmp/luci-app-byte-setup.log": [
+					"read"
+				]
 			}
 		},
 		"write": {
 			"ubus": {
-				"byte": [ "setup", "action", "uninstall" ]
+				"byte": [
+					"setup",
+					"action",
+					"uninstall",
+					"agh_password",
+					"ipv6_mode"
+				]
 			}
 		}
 	}

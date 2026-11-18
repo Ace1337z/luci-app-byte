@@ -1,0 +1,12 @@
+#!/bin/sh
+# WAN went up: the lease may carry different resolvers, and AdGuardHome's
+# fallback list is only a safety net while it points at addresses that still
+# answer. The watchdog rewrites fallback_dns only when the set actually changed.
+# Detached, so a slow AdGuardHome restart never blocks the interface.
+[ "$ACTION" = "ifup" ] || exit 0
+case "$INTERFACE" in
+	lan|lan6|br-lan) exit 0 ;;
+esac
+[ -x /usr/sbin/agh-pw-watchdog ] || exit 0
+/usr/sbin/agh-pw-watchdog --refresh-fallback >/dev/null 2>&1 &
+exit 0

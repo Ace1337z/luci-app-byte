@@ -2,4 +2,15 @@
 # rpcd only scans /usr/libexec/rpcd at start, so a freshly installed package
 # needs one restart before the BYTE page can call its own backend. Runs once.
 [ -x /etc/init.d/rpcd ] && /etc/init.d/rpcd restart 2>/dev/null
+
+# The DNS health watchdog is a procd service, not a cron entry: the panel starts
+# the installer with --no-watchdog, so a cron-only watchdog never existed on
+# 1.1.3 and a DNS stall went unnoticed for ~100 minutes. Enable it here so a
+# fresh install has it running from first boot; the panel and the installer
+# enable it again on a box that already has it. It idles until AdGuardHome
+# exists.
+if [ -x /etc/init.d/agh-pw-guard ]; then
+	/etc/init.d/agh-pw-guard enable 2>/dev/null
+	/etc/init.d/agh-pw-guard restart 2>/dev/null
+fi
 exit 0

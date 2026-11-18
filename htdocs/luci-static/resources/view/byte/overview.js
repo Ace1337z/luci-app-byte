@@ -9,8 +9,13 @@ var callSetup     = rpc.declare({ object: 'byte', method: 'setup', params: [ 'dr
 var callUninstall = rpc.declare({ object: 'byte', method: 'uninstall', params: [ 'purge' ] });
 var callAction    = rpc.declare({ object: 'byte', method: 'action', params: [ 'name' ] });
 var callLog       = rpc.declare({ object: 'byte', method: 'log', params: [ 'lines' ] });
+var callAghPass   = rpc.declare({ object: 'byte', method: 'agh_password', params: [ 'password' ] });
 
-var CSS_URL = L.resource('byte/byte.css');
+/* ?v= must match PKG_VERSION-PKG_RELEASE in the package Makefile: L.resource()
+   adds no cache buster, so without it a browser keeps the previous stylesheet
+   across a sysupgrade and the page looks unchanged (ci/preflight.sh checks the
+   two match). */
+var CSS_URL = L.resource('byte/byte.css') + '?v=1.0.4-r7';
 
 function badge(text, tone) {
 	return E('span', { 'class': 'byte-badge byte-badge--' + tone }, [ text ]);
@@ -90,11 +95,11 @@ return view.extend({
 		return ui.showModal(_('Install and wire AdGuard Home'), [
 			E('p', {}, [ _('This installs AdGuard Home (and its LuCI app if missing) from this firmware\'s own repository, then wires it to PassWall2 without DNS or port conflicts:') ]),
 			E('ul', { 'style': 'margin:0;padding-left:18px;font-size:12.5px;line-height:1.6' }, [
-				E('li', {}, [ _('dnsmasq moves to port 54, AdGuard Home takes port 53') ]),
-				E('li', {}, [ _('AdGuard upstream becomes dnsmasq on :54, which forwards to PassWall2 DNS') ]),
-				E('li', {}, [ _('.lan / .local / .home.arpa keep resolving through dnsmasq') ]),
-				E('li', {}, [ _('SafeSearch/parental filtering is turned off') ]),
-				E('li', {}, [ _('A rollback manifest is kept; IPv4 bind only, no watchdog cron') ])
+				E('li', {}, [ _('dnsmasq moves to port 5335, AdGuard Home takes port 53') ]),
+				E('li', {}, [ _('external names resolve over DoH (Quad9 + Cloudflare), independent of PassWall2') ]),
+				E('li', {}, [ _('.lan / .local keep resolving through dnsmasq') ]),
+				E('li', {}, [ _('an nftables chain redirects hard-coded resolvers back to AdGuard Home before PassWall2 NAT') ]),
+				E('li', {}, [ _('a rollback manifest is kept; the watchdog is installed and run every 60 s') ])
 			]),
 			E('div', { 'class': 'cbi-value' }, [
 				E('label', { 'class': 'cbi-value-title' }, [ _('Web admin user') ]),
@@ -261,6 +266,86 @@ return view.extend({
 		});
 	},
 
+	/* AdGuard Home has no post-install API for the web password, so the
+	 * backend stops the daemon, rewrites the bcrypt hash in users:, checks the
+	 * config and starts it again. Say that out loud before the click: DNS is
+	 * down for a second or two, and a typo in the username would lock the
+	 * AdGuard UI (not LuCI) out. */
+	handleAghPassword: function() {
+		var self = this;
+
+		self.aghPass1 = self.aghPass1 || '';
+		self.aghPass2 = self.aghPass2 || '';
+
+		var errEl = E('p', { 'class': 'byte-note', 'style': 'color:#c0392b' });
+
+		function check() {
+			if (self.aghPass1.length < 8)
+				return _('Use at least 8 characters.');
+			if (self.aghPass1 !== self.aghPass2)
+				return _('The two passwords do not match.');
+			return null;
+		}
+
+		return ui.showModal(_('Change the AdGuard Home password'), [
+			E('p', {}, [ _('Sets a new password for the AdGuard Home web interface (user %s). The AdGuard Home service is stopped for a second or two while its config is rewritten and checked; DNS answers pause for that long, then resume.') .format(self.s && self.s.agh && self.s.agh.user ? self.s.agh.user : 'admin') ]),
+			E('div', { 'class': 'cbi-value' }, [
+				E('label', { 'class': 'cbi-value-title' }, [ _('New password') ]),
+				E('div', { 'class': 'cbi-value-field' }, [
+					E('input', {
+						'type': 'password', 'class': 'cbi-input-password', 'autocomplete': 'new-password',
+						'value': self.aghPass1,
+						'input': function(e) { self.aghPass1 = e.target.value; errEl.textContent = ''; }
+					})
+				])
+			]),
+			E('div', { 'class': 'cbi-value' }, [
+				E('label', { 'class': 'cbi-value-title' }, [ _('Repeat password') ]),
+				E('div', { 'class': 'cbi-value-field' }, [
+					E('input', {
+						'type': 'password', 'class': 'cbi-input-password', 'autocomplete': 'new-password',
+						'value': self.aghPass2,
+						'input': function(e) { self.aghPass2 = e.target.value; errEl.textContent = ''; }
+					})
+				])
+			]),
+			errEl,
+			E('p', { 'class': 'byte-note' }, [ _('The plaintext copy in /etc/agh-pw-backup/agh-admin.txt is updated too. Nothing else in AdGuard Home changes: filtering lists, clients and the query log stay as they are.') ]),
+			E('div', { 'class': 'button-row' }, [
+				E('button', { 'class': 'btn cbi-button', 'click': ui.hideModal }, [ _('Cancel') ]),
+				E('button', {
+					'class': 'btn cbi-button cbi-button-apply',
+					'click': function() {
+						var bad = check();
+						if (bad) {
+							errEl.textContent = bad;
+							return;
+						}
+						ui.hideModal();
+						return self.applyAghPassword();
+					}
+				}, [ _('Change password') ])
+			])
+		]);
+	},
+
+	applyAghPassword: function() {
+		var self = this;
+
+		return callAghPass(self.aghPass1).then(function(res) {
+			var ok = !!(res && res.ok);
+
+			self.aghPass1 = self.aghPass2 = '';
+			ui.addNotification(null, E('p', {}, [
+				(res && res.message) || (ok ? _('Password changed.') : _('Password change failed.'))
+			]), ok ? 'info' : 'warning');
+
+			return self.refresh();
+		}).catch(function(err) {
+			ui.addNotification(null, E('p', {}, [ String(err) ]), 'danger');
+		});
+	},
+
 	buildPage: function(status) {
 		if (!document.querySelector('link[href="' + CSS_URL + '"]'))
 			document.head.appendChild(E('link', { rel: 'stylesheet', href: CSS_URL }));
@@ -282,6 +367,10 @@ return view.extend({
 					'class': 'btn cbi-button',
 					'click': ui.createHandlerFn(this, 'handleAction', 'restart')
 				}, [ _('Restart') ]) : '',
+				status.agh.installed ? E('button', {
+					'class': 'btn cbi-button',
+					'click': ui.createHandlerFn(this, 'handleAghPassword')
+				}, [ _('Change password') ]) : '',
 				status.agh.installed ? E('button', {
 					'class': 'btn cbi-button',
 					'click': ui.createHandlerFn(this, 'handleAction', status.agh.enabled ? 'autostart_off' : 'autostart_on')
@@ -307,7 +396,7 @@ return view.extend({
 			]),
 			E('p', { 'class': 'byte-note' }, [ status.agh.installed
 				? _('AdGuard Home is served from this firmware\'s repository. Filtering lists, clients and query log live in AdGuard\'s own web UI, linked above.')
-				: _('AdGuard Home is not installed. The installer pulls it from this firmware\'s repository, moves dnsmasq to port 54 and keeps PassWall2 as the upstream resolver.') ])
+				: _('AdGuard Home is not installed. The installer pulls it from this firmware\'s repository, moves dnsmasq to port 5335 and resolves external names over DoH.') ])
 		];
 
 		var pwBody = [
@@ -347,10 +436,19 @@ return view.extend({
 				])
 			]),
 			kv([
+				[ _('DNS answers'), status.dns.agh_resolves === 1 ? _('ok (uncached name)') : (status.dns.agh_resolves === 0 ? _('broken - guard repairing') : _('-')) ],
+				[ _('Upstream'), status.dns.upstream || _('-') ],
+				[ _('DNS hijack'), status.dns.hijack ? _('active (nft)') : _('missing') ],
+				[ _('PassWall2 DNS listener'), status.dns.passwall_dns ? _('listening') : _('not listening') ],
+				[ _('Fallback DNS'), status.dns.fallback_dns || _('none (DoH only)') ],
+				[ _('Health guard'), status.dns.guard_enabled ? _('60s loop') : _('off') ],
 				[ _('PassWall2 DNS redirect'), status.dns.passwall_redirect === '0' ? _('off (correct)') : (status.dns.passwall_redirect || '-') ],
 				[ _('PassWall2 remote DNS'), status.dns.passwall_remote_dns || '-' ],
-				[ _('Packet steering'), status.dns.steering === '1' ? _('on') : _('off') ]
-			])
+				[ _('Packet steering'), ['1', '2'].indexOf(status.dns.steering) >= 0 ? _('on') : _('off') ]
+			]),
+			status.dns.rescue_active ? E('p', { 'class': 'byte-note' }, [
+				_('The watchdog rescued DNS to dnsmasq because AdGuard Home stopped answering: filtering is off until you run the setup again.')
+			]) : ''
 		];
 
 		/* Hero goes BELOW the cards. LuCI pins its toolbar to the top of the
@@ -362,7 +460,7 @@ return view.extend({
 			 * "Install and wire" touches dnsmasq's port and PassWall2's DNS. */
 			E('section', { 'class': 'byte-intro' }, [
 				E('h3', {}, [ _('AdGuard Home + PassWall2 setup') ]),
-				E('p', {}, [ _('This page wires DNS filtering for the whole LAN: it installs AdGuard Home from this firmware\'s own repository and puts it in front of PassWall2. Clients keep using port 53 on the router, AdGuard filters, PassWall2 resolves and proxies, and dnsmasq moves to port 54 for .lan names.') ]),
+				E('p', {}, [ _('This page wires DNS filtering for the whole LAN: it installs AdGuard Home and puts it in front of PassWall2. Clients keep using port 53 on the router, AdGuard filters and resolves over DoH, PassWall2 only proxies, and dnsmasq moves to port 5335 for .lan names. An nftables chain sends every other plaintext DNS query back to AdGuard Home before PassWall2\'s NAT.') ]),
 				E('p', { 'class': 'byte-note' }, [ _('It is not a general settings page: PassWall2 nodes live under Services - PassWall2, and TTL, modem, WiFi, firewall and the rest are under Network. Nothing is proxied for you here.') ])
 			]),
 

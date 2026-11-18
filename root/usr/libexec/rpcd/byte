@@ -8,6 +8,8 @@
 #   uninstall [purge] start the installer in uninstall mode (non-blocking)
 #   action {name}     start|stop|restart|autostart_on|autostart_off
 #   log {lines}       live tail of the current/last setup run + exit status
+#   agh_password      set a new AdGuard Home web admin password
+#   ipv6_mode {action} status|on|off - the one switch for the IPv6 path
 #
 # Contract: rpcd calls us with no argument to list methods, or with
 # "call <method>" and a JSON object on stdin, expecting a JSON object back.
@@ -22,6 +24,9 @@ PIDF=/tmp/luci-app-byte-setup.pid
 AGH_ROOT=${AGH_ROOT:-/usr/share/AdGuardHome}
 AGH_INITD=/etc/init.d/AdGuardHome
 AGH_LINK=/usr/bin/AdGuardHome
+# bcrypt helper built from local-feeds/aw1000-local/agh-passwd.
+AGH_PW_HELPER=${AGH_PW_HELPER:-/usr/bin/agh-passwd}
+AGH_ADMIN_FILE=${AGH_ADMIN_FILE:-/etc/agh-pw-backup/agh-admin.txt}
 
 list_methods() {
 	cat <<'EOF'
@@ -30,7 +35,9 @@ list_methods() {
 	"setup": { "dry_run": "string" },
 	"uninstall": { "purge": "string" },
 	"action": { "name": "string" },
-	"log": { "lines": "string" }
+	"log": { "lines": "string" },
+	"agh_password": { "password": "string" },
+	"ipv6_mode": { "action": "string" }
 }
 EOF
 }
@@ -58,6 +65,112 @@ agh_yaml_sect() {
 			print
 			exit
 		}' "$AGH_YAML" 2>/dev/null
+}
+
+# The web admin username lives in the users: block; the installer also keeps
+# a plaintext copy with the current password in $AGH_ADMIN_FILE.
+agh_yaml_user() {
+	awk '
+		/^users:[[:space:]]*$/ { inu = 1; next }
+		inu && /^[^[:space:]]/ { exit }
+		inu && /^[[:space:]]*-[[:space:]]*name:[[:space:]]*/ {
+			sub(/^[[:space:]]*-[[:space:]]*name:[[:space:]]*/, "")
+			gsub(/["'\'']/, "")
+			print
+			exit
+		}' "$AGH_YAML" 2>/dev/null
+}
+
+# Resolver health, not socket health. On 1.1.3 AdGuardHome held :53 open while
+# every upstream timed out, so "is it running" and "is the port bound" both said
+# yes while the whole LAN had no DNS. 0 answers, 1 broken, 2 not testable.
+# The Overview polls this object, so the answer is cached for a few seconds and
+# the probe is bounded: a broken resolver must not queue rpcd calls.
+agh_resolves() {
+	local cache=/tmp/byte-dns-probe tmo="" now last rc
+	now=$(date +%s 2>/dev/null)
+	case "${now:-x}" in ''|*[!0-9]*) now=0 ;; esac
+	if [ -s "$cache" ]; then
+		last=$(cut -d' ' -f1 "$cache" 2>/dev/null)
+		case "${last:-x}" in ''|*[!0-9]*) last=0 ;; esac
+		if [ $((now - last)) -lt 5 ]; then
+			rc=$(cut -d' ' -f2 "$cache" 2>/dev/null)
+			case "${rc:-x}" in 0|1|2) return "$rc" ;; esac
+		fi
+	fi
+	rc=2
+	if pidof AdGuardHome >/dev/null 2>&1 && command -v nslookup >/dev/null 2>&1; then
+		command -v timeout >/dev/null 2>&1 && tmo="timeout 2"
+		rc=1
+		# shellcheck disable=SC2086
+		$tmo nslookup -type=soa . 127.0.0.1 >/dev/null 2>&1 && rc=0
+		if [ "$rc" != 0 ]; then
+			# shellcheck disable=SC2086
+			$tmo nslookup openwrt.org 127.0.0.1 >/dev/null 2>&1 && rc=0
+		fi
+	fi
+	printf '%s %s\n' "$now" "$rc" > "$cache" 2>/dev/null
+	return "$rc"
+}
+
+pw_dns_listening() {
+	if command -v ss >/dev/null 2>&1 && ss -lntu >/dev/null 2>&1; then
+		ss -lntu 2>/dev/null
+	elif command -v netstat >/dev/null 2>&1; then
+		netstat -lntu 2>/dev/null
+	else
+		return 1
+	fi | grep -qE '[:.]15353([[:space:]]|$)'
+}
+
+agh_fallback_list() {
+	awk '
+		/^dns:[[:space:]]*$/ { ind = 1; next }
+		ind && /^[^[:space:]]/ { exit }
+		ind && /^  fallback_dns:[[:space:]]*$/ { inf = 1; next }
+		inf && /^  - / { sub(/^  - /, ""); gsub(/"/, ""); printf "%s ", $0; next }
+		inf && /^  [^[:space:]-]/ { exit }
+	' "$AGH_YAML" 2>/dev/null
+}
+
+agh_admin_user() {
+	local u
+	u=$(agh_yaml_user)
+	[ -n "$u" ] || u=$(sed -n 's/^user=//p' "$AGH_ADMIN_FILE" 2>/dev/null | head -n 1)
+	[ -n "$u" ] || u=admin
+	printf '%s' "$u"
+}
+
+# Replace the first bcrypt hash under users:. AdGuard Home's API cannot change
+# a password after the first-run wizard, so the YAML is rewritten directly and
+# the daemon is stopped first: on SIGTERM it writes its in-memory config, which
+# would otherwise put the old hash back.
+agh_yaml_set_password() {
+	local hash="$1" tmp rc=0
+	tmp="${AGH_YAML}.agh-pw.$$"
+	awk -v hash="$hash" '
+		/^users:[[:space:]]*$/ { inu = 1; print; next }
+		inu && /^[^[:space:]]/ { inu = 0 }
+		inu && !done && /^[[:space:]]+password:[[:space:]]*/ {
+			match($0, /^[[:space:]]+password:[[:space:]]*/)
+			$0 = substr($0, 1, RLENGTH) hash
+			done = 1
+			print
+			next
+		}
+		{ print }
+		END { if (!done) exit 3 }
+	' "$AGH_YAML" >"$tmp" 2>/dev/null || rc=$?
+	if [ "$rc" != 0 ]; then
+		rm -f "$tmp"
+		return "$rc"
+	fi
+	chmod 600 "$tmp" 2>/dev/null
+	mv -f "$tmp" "$AGH_YAML" 2>/dev/null || {
+		rm -f "$tmp"
+		return 1
+	}
+	return 0
 }
 
 wan_ip() {
@@ -183,6 +296,111 @@ setup_exit() {
 	case "$rc" in '' | *[!0-9]*) echo -1 ;; *) echo "$rc" ;; esac
 }
 
+# --- IPv6 switch: the same four settings as the first-boot IPv4-only script
+# --- (overlay/files/etc/uci-defaults/97-aw1000-ipv4-wan), applied at runtime.
+# --- "on" deletes pdp_type so wwand dials its default dual-stack context.
+v6_device() {
+	local d
+	d=$(uci -q get network.wwan.device)
+	printf '%s' "${d:-wwand0}"
+}
+
+v6_uplink_has_v6() {
+	ip -6 addr show dev "$(v6_device)" scope global 2>/dev/null | grep -q 'inet6 '
+}
+
+v6_mode_of() {
+	case "$(uci -q get network.wwan.pdp_type)" in
+	ipv4 | ipv6) printf 'off'; return 0 ;;
+	esac
+	case "$(uci -q get dhcp.lan.ra)" in
+	disabled) printf 'off' ;;
+	*) printf 'on' ;;
+	esac
+}
+
+do_ipv6_mode() {
+	local action mode changed=0 uplink=0 active=0
+	json_load "$(cat)"
+	json_get_var action action
+	case "$action" in
+	status | on | off) ;;
+	*)
+		json_init
+		json_add_boolean "ok" 0
+		json_add_string "message" "invalid action"
+		json_dump
+		return
+		;;
+	esac
+	if [ "$action" != status ]; then
+		if [ -z "$(uci -q get network.wwan.proto)" ]; then
+			json_init
+			json_add_boolean "ok" 0
+			json_add_string "message" "no wwand uplink in /etc/config/network"
+			json_dump
+			return
+		fi
+		if [ "$action" != "$(v6_mode_of)" ]; then
+			changed=1
+			if [ "$action" = off ]; then
+				# Dial a single-stack IPv4 context and stop advertising
+				# IPv6 to the LAN. AAAA filtering makes clients fall back
+				# immediately instead of after a failed connect.
+				uci -q set network.wwan.pdp_type='ipv4'
+				uci -q set network.wwan.aw1000_ipv4only='1'
+				uci -q delete network.lan.ip6assign
+				uci -q commit network
+				uci -q set dhcp.lan.ra='disabled'
+				uci -q set dhcp.lan.dhcpv6='disabled'
+				uci -q set dhcp.lan.ra_slaac='0'
+				uci -q delete dhcp.lan.ra_flags
+				uci -q set dhcp.@dnsmasq[0].filter_aaaa='1'
+				uci -q commit dhcp
+			else
+				# An unset pdp_type is wwand's own default (ipv4v6),
+				# which is what upstream expects.
+				uci -q delete network.wwan.pdp_type
+				uci -q delete network.wwan.aw1000_ipv4only
+				uci -q set network.lan.ip6assign='60'
+				uci -q commit network
+				uci -q set dhcp.lan.ra='server'
+				uci -q set dhcp.lan.dhcpv6='server'
+				uci -q set dhcp.lan.ra_slaac='1'
+				uci -q delete dhcp.lan.ra_flags
+				uci -q set dhcp.@dnsmasq[0].filter_aaaa='0'
+				uci -q commit dhcp
+			fi
+			/etc/init.d/dnsmasq reload >/dev/null 2>&1
+			[ -x /etc/init.d/odhcpd ] && /etc/init.d/odhcpd restart >/dev/null 2>&1
+			# A PDP type change only reaches the carrier on a fresh
+			# context. Detach the redial so rpcd answers immediately;
+			# the page says IPv4 drops for a few seconds.
+			(
+				sleep 1
+				ifdown wwan >/dev/null 2>&1
+				sleep 1
+				ifup wwan >/dev/null 2>&1
+			) >/dev/null 2>&1 </dev/null &
+		fi
+	fi
+	mode=$(v6_mode_of)
+	v6_uplink_has_v6 && uplink=1
+	[ "$mode" = on ] && [ "$uplink" = 1 ] && active=1
+	json_init
+	json_add_boolean "ok" 1
+	json_add_string "mode" "$mode"
+	json_add_int "active" "$active"
+	json_add_int "uplink" "$uplink"
+	json_add_int "changed" "$changed"
+	if [ "$changed" = 1 ]; then
+		json_add_string "message" "saved; the uplink redials in the background"
+	else
+		json_add_string "message" "unchanged"
+	fi
+	json_dump
+}
+
 do_status() {
 	local running=0 installed=0 enabled=0 ver="" up load memtot memavail memused
 	local dport= prefer= rdr= rp= aghweb= aghdns= feed= wan= wanup=0 ver_s=0
@@ -215,6 +433,28 @@ do_status() {
 	[ -n "$wan" ] && wanup=1
 	pw_running && pwr=1
 	pwn=$(pw_nodes)
+	# DNS chain health, not just "is the daemon up". Status polls this object,
+	# so the probe is bounded by `timeout 2` and skipped when AGH is not running.
+	agh_resolves
+	agh_res=$?
+	pwdns=0
+	pw_dns_listening && pwdns=1
+	fbdns=$(agh_fallback_list)
+	fbdns=${fbdns% }
+	# 1.1.5 topology: AGH owns :53, dnsmasq moved to 5335 for .lan, external
+	# names go over DoH, and an nft chain (priority -150, before PassWall2's
+	# NAT) forces every other plaintext DNS query back to AGH.
+	hijack=0
+	if [ -f /etc/nftables.d/20-agh-dns-hijack.nft ] &&
+		nft list ruleset 2>/dev/null | grep -q 'agh: LAN DNS'; then
+		hijack=1
+	fi
+	upstream=$(awk '/^  upstream_dns:/{f=1;next} f&&/^  [a-z_]+:/{exit} f&&/^    - /{gsub(/^    - /,"");gsub(/"/,"");printf "%s ",$0}' "$AGH_YAML" 2>/dev/null)
+	upstream=${upstream% }
+	rescue=0
+	[ -f /tmp/agh-pw-rescue ] && rescue=1
+	guard=0
+	[ -x /etc/init.d/agh-pw-guard ] && /etc/init.d/agh-pw-guard enabled >/dev/null 2>&1 && guard=1
 	# Version of the vendored installer: the panel shows it so a stale copy is
 	# visible instead of silently installing last year's behaviour.
 	stage_ver=$(sed -n 's/^# VENDORED_PIN=\([0-9a-f]*\).*$/\1/p' "$STAGE" 2>/dev/null | head -n 1)
@@ -248,6 +488,7 @@ do_status() {
 	json_add_string "web" "${aghweb:-}"
 	json_add_string "dns_port" "${aghdns:-}"
 	json_add_int "admin" "$(grep -q '^users: \[\]' "$AGH_YAML" 2>/dev/null && echo 0 || echo 1)"
+	json_add_string "user" "$(agh_admin_user)"
 	json_add_string "admin_file" "$([ -f /etc/agh-pw-backup/agh-admin.txt ] && echo /etc/agh-pw-backup/agh-admin.txt || echo '')"
 	json_close_object
 	json_add_object "dns"
@@ -255,6 +496,13 @@ do_status() {
 	json_add_string "passwall_redirect" "${rdr:-}"
 	json_add_string "passwall_remote_dns" "${rp:-}"
 	json_add_string "steering" "${prefer:-0}"
+	json_add_int "agh_resolves" "$agh_res"
+	json_add_int "passwall_dns" "$pwdns"
+	json_add_string "fallback_dns" "$fbdns"
+	json_add_string "upstream" "$upstream"
+	json_add_int "hijack" "$hijack"
+	json_add_int "rescue_active" "$rescue"
+	json_add_int "guard_enabled" "$guard"
 	json_close_object
 	json_add_object "passwall"
 	json_add_int "running" "$pwr"
@@ -270,10 +518,11 @@ do_status() {
 # Shared by do_setup/do_uninstall: start the installer detached with the given
 # arguments and hand back immediately.
 start_stage() {
-	# Site policy: AdGuardHome binds IPv4 only and no health-watchdog cron is
-	# installed. The installer takes the address family from IPV6_ENABLE and
-	# skips its 2-minute cron with --no-watchdog.
-	local args="$1 --no-watchdog" rc
+	# The upstream installer writes /usr/sbin/agh-pw-watchdog and its 2-minute
+	# cron entry itself; the packaged procd guard (agh-pw-guard) then calls the
+	# same binary every 60 s, so a busy box never waits for cron. 1.1.3 shipped
+	# neither, and a stalled upstream went unnoticed for ~100 minutes.
+	local args="$1" rc
 	json_init
 	if setup_running; then
 		json_add_boolean "ok" 0
@@ -391,6 +640,156 @@ do_action() {
 	json_dump
 }
 
+agh_daemon_init() {
+	local init="$AGH_INIT"
+	[ -x "$init" ] || init="$AGH_INITD"
+	[ -x "$init" ] && { printf '%s' "$init"; return 0; }
+	return 1
+}
+
+# Stop AdGuard Home and wait for the process to be gone. Returns 0 when the
+# daemon was running and is now stopped, 1 when it was not running, 2 when it
+# could not be stopped (do not touch the YAML in that case).
+agh_stop_daemon() {
+	local init i=0
+	pidof AdGuardHome >/dev/null 2>&1 || return 1
+	init=$(agh_daemon_init) || return 2
+	"$init" stop >/dev/null 2>&1
+	while [ "$i" -lt 10 ] && pidof AdGuardHome >/dev/null 2>&1; do
+		i=$((i + 1))
+		sleep 1
+	done
+	if pidof AdGuardHome >/dev/null 2>&1; then
+		kill "$(pidof AdGuardHome)" 2>/dev/null
+		sleep 1
+	fi
+	if pidof AdGuardHome >/dev/null 2>&1; then
+		kill -9 "$(pidof AdGuardHome)" 2>/dev/null
+		sleep 1
+	fi
+	pidof AdGuardHome >/dev/null 2>&1 && return 2
+	return 0
+}
+
+agh_start_daemon() {
+	local init i=0
+	init=$(agh_daemon_init) || return 1
+	"$init" start >/dev/null 2>&1
+	while [ "$i" -lt 10 ]; do
+		pidof AdGuardHome >/dev/null 2>&1 && return 0
+		i=$((i + 1))
+		sleep 1
+	done
+	return 1
+}
+
+# One-click password change for the panel. AdGuard Home has no post-install
+# API for this (PUT /control/profile/update only carries name/language/theme),
+# so the users: block is rewritten with a bcrypt hash from agh-passwd. The
+# daemon is stopped first: on SIGTERM it writes its in-memory config, which
+# would restore the old hash.
+do_agh_password() {
+	local pass hash user bin backup was_running=0 rc=0 msg
+	json_load "$(cat)"
+	json_get_var pass password
+	if [ -z "${pass:-}" ] || [ "${#pass}" -lt 8 ]; then
+		json_init
+		json_add_boolean "ok" 0
+		json_add_string "message" "password must be at least 8 characters"
+		json_dump
+		return
+	fi
+	if [ "${#pass}" -gt 1024 ] || [ "$(printf '%s' "$pass" | wc -l)" -gt 0 ]; then
+		json_init
+		json_add_boolean "ok" 0
+		json_add_string "message" "password contains characters the config file cannot hold"
+		json_dump
+		return
+	fi
+	AGH_YAML=$(agh_yaml_path)
+	if ! agh_installed || [ ! -f "$AGH_YAML" ]; then
+		json_init
+		json_add_boolean "ok" 0
+		json_add_string "message" "AdGuard Home is not configured"
+		json_dump
+		return
+	fi
+	if [ ! -x "$AGH_PW_HELPER" ]; then
+		json_init
+		json_add_boolean "ok" 0
+		json_add_string "message" "password helper missing: $AGH_PW_HELPER"
+		json_dump
+		return
+	fi
+	bin=$(agh_bin)
+	if [ -z "$bin" ]; then
+		json_init
+		json_add_boolean "ok" 0
+		json_add_string "message" "AdGuard Home binary not found"
+		json_dump
+		return
+	fi
+	hash=$(printf '%s' "$pass" | "$AGH_PW_HELPER" 10 2>/dev/null)
+	case "$hash" in
+	'$2b$'*) ;;
+	*)
+		json_init
+		json_add_boolean "ok" 0
+		json_add_string "message" "could not hash the password"
+		json_dump
+		return
+		;;
+	esac
+	agh_stop_daemon
+	case $? in
+	0) was_running=1 ;;
+	1) ;;
+	*)
+		json_init
+		json_add_boolean "ok" 0
+		json_add_string "message" "could not stop AdGuard Home; password unchanged"
+		json_dump
+		return
+		;;
+	esac
+	backup="${AGH_YAML}.agh-pw.bak"
+	cp -f "$AGH_YAML" "$backup" 2>/dev/null
+	agh_yaml_set_password "$hash" || rc=$?
+	if [ "$rc" = 0 ] && ! "$bin" --check-config -c "$AGH_YAML" >/dev/null 2>&1; then
+		rc=1
+	fi
+	if [ "$rc" != 0 ]; then
+		[ -s "$backup" ] && cp -f "$backup" "$AGH_YAML" 2>/dev/null
+		[ "$was_running" = 1 ] && agh_start_daemon
+		json_init
+		json_add_boolean "ok" 0
+		json_add_string "message" "could not write a valid config; the password is unchanged"
+		json_dump
+		return
+	fi
+	user=$(agh_admin_user)
+	mkdir -p "$(dirname "$AGH_ADMIN_FILE")" 2>/dev/null
+	(umask 077; printf 'user=%s\npass=%s\n' "$user" "$pass" >"$AGH_ADMIN_FILE") 2>/dev/null
+	chmod 600 "$AGH_ADMIN_FILE" 2>/dev/null
+	if [ "$was_running" = 1 ] && ! agh_start_daemon; then
+		json_init
+		json_add_boolean "ok" 0
+		json_add_string "message" "password saved, but AdGuard Home did not restart; start it from the panel"
+		json_dump
+		return
+	fi
+	json_init
+	json_add_boolean "ok" 1
+	json_add_string "user" "$user"
+	if [ "$was_running" = 1 ]; then
+		msg="password changed; AdGuard Home restarted"
+	else
+		msg="password changed; AdGuard Home was stopped and stays stopped"
+	fi
+	json_add_string "message" "$msg"
+	json_dump
+}
+
 do_log() {
 	local n=400
 	json_load "$(cat)"
@@ -419,6 +818,8 @@ call)
 	uninstall) do_uninstall ;;
 	action) do_action ;;
 	log) do_log ;;
+	agh_password) do_agh_password ;;
+	ipv6_mode) do_ipv6_mode ;;
 	*)
 		json_init
 		json_add_string "error" "unknown method"

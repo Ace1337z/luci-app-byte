@@ -1,39 +1,69 @@
 /* BYTE panel - scoped styles.
    All selectors are prefixed .byte- so nothing here can leak into other LuCI
-   pages or fight the theme. Colours come from the theme's CSS variables with
-   light-theme fallbacks, so the page looks native on Footstrap, Bootstrap and
-   Vantage-derived themes alike. */
+   pages or fight the theme.
 
+   Palette: LuCI themes do not share CSS variable names. Vantage (the BYTE
+   default) defines only --v-*; Bootstrap and the older themes define
+   --background-color-*, --border-color-*, --text-color-*. Vantage replaces the
+   LuCI stylesheet outright, so the Bootstrap names are undefined there and a
+   literal light fallback used to win: white cards painted under the theme's
+   light text ("dual tone" page, unreadable values). Resolve the palette once on
+   .byte-page - Vantage first, legacy LuCI second, literal light last - and use
+   only the local --byte-* names below. */
 .byte-page {
+	--byte-surface: var(--v-surface, var(--background-color-high, #ffffff));
+	--byte-surface-2: var(--v-surface-2, var(--background-color-high, #ffffff));
+	--byte-surface-3: var(--v-surface-3, var(--background-color-medium, #f4f7fa));
+	--byte-line: var(--v-line, var(--border-color-low, #d8dee6));
+	--byte-line-2: var(--v-line-2, var(--border-color-medium, #b9c3cf));
+	--byte-line-soft: color-mix(in srgb, var(--byte-line) 55%, transparent);
+	--byte-text: var(--v-text, var(--text-color-high, #14171a));
+	--byte-muted: var(--v-text-2, var(--text-color-medium, #5a6472));
+	--byte-faint: var(--v-text-3, var(--text-color-low, #8b96a3));
+	--byte-accent: var(--v-chart-2, var(--primary-color, #00b5e2));
+	--byte-accent-soft: var(--v-accent-soft, rgba(0, 181, 226, .12));
+	--byte-ok: var(--v-ok, #1b7f3b);
+	--byte-warn: var(--v-warn, #9a6b00);
+	--byte-err: var(--v-err, #b3261e);
+	--byte-idle: var(--v-text-3, #5a6472);
+	--byte-ok-soft: var(--v-ok-soft, rgba(27, 127, 59, .12));
+	--byte-warn-soft: var(--v-warn-soft, rgba(154, 107, 0, .12));
+	--byte-err-soft: var(--v-err-soft, rgba(179, 38, 30, .12));
+	--byte-soft-bg: var(--v-surface-3, var(--background-color-medium, #f4f7fa));
+	--byte-meter: var(--v-meter, color-mix(in srgb, var(--byte-text) 14%, transparent));
+
+	color: var(--byte-text);
 	display: flex;
 	flex-direction: column;
 	gap: 16px;
 }
 
-/* Purpose banner. Deliberately first child and visually a light panel, not a
-   card: it explains what the page is for (AdGuard Home in front of PassWall2)
-   before an admin presses a button that moves dnsmasq off port 53. */
+/* Purpose banner. Deliberately first child and visually a panel, not a card: it
+   explains what the page is for (AdGuard Home in front of PassWall2) before an
+   admin presses a button that moves dnsmasq off port 53. */
 .byte-intro {
 	display: flex;
 	flex-direction: column;
 	gap: 6px;
 	padding: 14px 18px;
 	border-radius: 12px;
-	border: 1px solid var(--border-color-low, #d8dee6);
-	border-inline-start: 3px solid #00b5e2;
-	background: var(--background-color-medium, #f4f7fa);
+	border: 1px solid var(--byte-line);
+	border-inline-start: 3px solid var(--byte-accent);
+	background: var(--byte-soft-bg);
+	color: var(--byte-text);
 }
 .byte-intro h3 {
 	margin: 0;
 	font-size: 14px;
 	font-weight: 600;
 	letter-spacing: .1px;
+	color: var(--byte-text);
 }
 .byte-intro p {
 	margin: 0;
 	font-size: 12.5px;
 	line-height: 1.55;
-	color: var(--text-color-medium, #5a6472);
+	color: var(--byte-muted);
 }
 
 .byte-hero {
@@ -44,10 +74,11 @@
 	flex-wrap: wrap;
 	padding: 18px 20px;
 	border-radius: 12px;
-	border: 1px solid var(--border-color-low, #d8dee6);
+	border: 1px solid var(--byte-line);
 	background: linear-gradient(135deg,
-		var(--background-color-high, #ffffff) 0%,
-		var(--background-color-medium, #f4f7fa) 100%);
+		var(--byte-surface-2) 0%,
+		var(--byte-soft-bg) 100%);
+	color: var(--byte-text);
 }
 
 .byte-hero h2 {
@@ -55,12 +86,13 @@
 	font-size: 20px;
 	font-weight: 600;
 	letter-spacing: .2px;
+	color: var(--byte-text);
 }
 
 .byte-hero .byte-sub {
 	margin: 4px 0 0;
 	font-size: 12px;
-	color: var(--text-color-medium, #5a6472);
+	color: var(--byte-muted);
 }
 
 .byte-hero .byte-sub code {
@@ -81,8 +113,9 @@
 	gap: 12px;
 	padding: 16px 18px;
 	border-radius: 12px;
-	border: 1px solid var(--border-color-low, #d8dee6);
-	background: var(--background-color-high, #ffffff);
+	border: 1px solid var(--byte-line);
+	background: var(--byte-surface);
+	color: var(--byte-text);
 	min-height: 100%;
 }
 
@@ -106,11 +139,12 @@
 	margin: 0;
 	font-size: 15px;
 	font-weight: 600;
+	color: var(--byte-text);
 }
 
 .byte-card__head .byte-hint {
 	font-size: 11px;
-	color: var(--text-color-medium, #5a6472);
+	color: var(--byte-muted);
 }
 
 .byte-badge {
@@ -135,10 +169,26 @@
 	opacity: .9;
 }
 
-.byte-badge--ok      { color: #1b7f3b; background: rgba(27,127,59,.10); border-color: rgba(27,127,59,.25); }
-.byte-badge--warn    { color: #9a6b00; background: rgba(154,107,0,.10); border-color: rgba(154,107,0,.25); }
-.byte-badge--err     { color: #b3261e; background: rgba(179,38,30,.10); border-color: rgba(179,38,30,.25); }
-.byte-badge--idle    { color: #5a6472; background: rgba(90,100,114,.10); border-color: rgba(90,100,114,.25); }
+.byte-badge--ok {
+	color: var(--byte-ok);
+	background: var(--byte-ok-soft);
+	border-color: color-mix(in srgb, var(--byte-ok) 35%, transparent);
+}
+.byte-badge--warn {
+	color: var(--byte-warn);
+	background: var(--byte-warn-soft);
+	border-color: color-mix(in srgb, var(--byte-warn) 35%, transparent);
+}
+.byte-badge--err {
+	color: var(--byte-err);
+	background: var(--byte-err-soft);
+	border-color: color-mix(in srgb, var(--byte-err) 35%, transparent);
+}
+.byte-badge--idle {
+	color: var(--byte-idle);
+	background: color-mix(in srgb, var(--byte-idle) 12%, transparent);
+	border-color: color-mix(in srgb, var(--byte-idle) 32%, transparent);
+}
 
 .byte-kv {
 	display: grid;
@@ -146,20 +196,23 @@
 	gap: 6px 14px;
 	margin: 0;
 	font-size: 12.5px;
+	color: var(--byte-text);
 }
 
 .byte-kv dt {
-	color: var(--text-color-medium, #5a6472);
+	color: var(--byte-muted);
 }
 
 .byte-kv dd {
 	margin: 0;
 	overflow-wrap: anywhere;
+	color: var(--byte-text);
+	font-variant-numeric: tabular-nums;
 }
 
 .byte-kv dd code,
 .byte-mono {
-	font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+	font-family: var(--v-mono, ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace);
 	font-size: 12px;
 }
 
@@ -177,11 +230,11 @@
 	margin: 0;
 	padding: 10px 12px;
 	border-radius: 8px;
-	border-left: 3px solid var(--border-color-medium, #b9c3cf);
-	background: var(--background-color-medium, #f4f7fa);
+	border-left: 3px solid var(--byte-line-2);
+	background: var(--byte-soft-bg);
 	font-size: 12px;
 	line-height: 1.45;
-	color: var(--text-color-medium, #4a5462);
+	color: var(--byte-muted);
 }
 
 .byte-chain {
@@ -189,6 +242,7 @@
 	flex-direction: column;
 	gap: 6px;
 	font-size: 12.5px;
+	color: var(--byte-text);
 }
 
 .byte-chain__step {
@@ -197,18 +251,20 @@
 	gap: 10px;
 	padding: 8px 10px;
 	border-radius: 8px;
-	background: var(--background-color-medium, #f4f7fa);
+	background: var(--byte-soft-bg);
+	border: 1px solid var(--byte-line-soft);
 }
 
 .byte-chain__step b {
 	min-width: 88px;
 	font-weight: 600;
 	font-size: 12px;
+	color: var(--byte-text);
 }
 
 .byte-chain__arrow {
 	text-align: center;
-	color: var(--text-color-low, #8b96a3);
+	color: var(--byte-faint);
 	font-size: 11px;
 	line-height: 1;
 }
@@ -226,33 +282,37 @@
 	gap: 8px;
 	padding: 10px 12px;
 	border-radius: 8px;
-	border: 1px solid var(--border-color-low, #d8dee6);
-	background: var(--background-color-medium, #f4f7fa);
+	border: 1px solid var(--byte-line);
+	background: var(--byte-soft-bg);
 	font-size: 12.5px;
 	text-decoration: none;
-	color: inherit;
+	color: var(--byte-text);
 }
 
 .byte-links a:hover {
-	border-color: var(--border-color-high, #98a4b3);
-	background: var(--background-color-high, #ffffff);
+	border-color: var(--byte-line-2);
+	background: var(--byte-surface-2);
 	text-decoration: none;
 }
 
 .byte-links a span.byte-arrow {
-	color: var(--text-color-low, #8b96a3);
+	color: var(--byte-faint);
 	font-size: 13px;
 }
 
+/* Deliberately a fixed dark terminal surface: log text is always light on a
+   near-black panel, so it stays legible on both the light and the dark theme
+   instead of inheriting the theme's text colour. */
 .byte-log {
 	max-height: 260px;
 	overflow: auto;
 	margin: 0;
 	padding: 12px;
 	border-radius: 8px;
+	border: 1px solid var(--byte-line);
 	background: #0f1419;
 	color: #d7e0ea;
-	font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+	font-family: var(--v-mono, ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace);
 	font-size: 11.5px;
 	line-height: 1.5;
 	white-space: pre-wrap;
@@ -285,13 +345,13 @@
 	gap: 8px 18px;
 	padding: 10px 4px 0;
 	font-size: 11.5px;
-	color: var(--text-color-medium, #5a6472);
+	color: var(--byte-muted);
 }
 
 /* Inline links inside a note paragraph (e.g. "Open PassWall2"). Keep them
    visually inline - LuCI's default <a> styling is far too loud here. */
 .byte-link {
-	color: var(--primary-color, #00b5e2);
+	color: var(--byte-accent);
 	text-decoration: none;
 	font-weight: 500;
 }
@@ -302,10 +362,11 @@
 /* Footer chip naming the pinned upstream installer commit, so a stale
    vendored copy is visible on the page instead of only in the source. */
 .byte-pin {
-	font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+	font-family: var(--v-mono, ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace);
 	font-size: 11px;
 	padding: 1px 7px;
 	border-radius: 999px;
-	border: 1px solid var(--border-color-low, #d8dee6);
-	background: var(--background-color-medium, #f4f7fa);
+	border: 1px solid var(--byte-line);
+	background: var(--byte-soft-bg);
+	color: var(--byte-muted);
 }

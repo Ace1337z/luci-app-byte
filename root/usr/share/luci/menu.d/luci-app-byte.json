@@ -8,11 +8,22 @@
 		}
 	},
 	"admin/tools/byte": {
-		"title": "BYTE (AdGuard Home + PassWall2)",
+		"title": "BYTE",
 		"order": 10,
 		"action": {
 			"type": "view",
 			"path": "byte/overview"
+		},
+		"depends": {
+			"acl": [ "luci-app-byte" ]
+		}
+	},
+	"admin/tools/ipv6": {
+		"title": "IPv6",
+		"order": 20,
+		"action": {
+			"type": "view",
+			"path": "byte/ipv6"
 		},
 		"depends": {
 			"acl": [ "luci-app-byte" ]
