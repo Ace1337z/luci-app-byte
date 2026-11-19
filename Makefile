@@ -20,6 +20,12 @@ PKG_VERSION:=1.0.4
 # Target Platform and Load Average gone, Firmware Version short ("BYTE v1.1.3")
 # instead of "BYTE 1.1.3 r0-xxxxxxx / LuCI ...". luci-mod-status owns that
 # include file, so it is patched from uci-defaults, not shipped in ./root.
+# r8 (1.1.9): two regressions from the 32f101a re-vendor are fixed. network.lan.
+# ipaddr is a CIDR, and AdGuardHome's bind_hosts/http.address reject the prefix,
+# so lan_ipv4() strips it again. The first-run admin API binds the DNS address it
+# is handed; it ran while dnsmasq still owned :53, answered HTTP 400, and left
+# users: [] (no admin). It now probes on a scratch loopback DNS port and only the
+# users: block is transplanted.
 # r7 (1.1.5): the vendored installer is the current openwrt-agh-passwall2
 # (32f101a): AdGuard Home resolves over DoH (Quad9 + Cloudflare), dnsmasq moves
 # to 5335 for .lan, and an nft chain at priority -150 forces every other
@@ -34,7 +40,7 @@ PKG_VERSION:=1.0.4
 # the panel starts the installer with --no-watchdog, so 1.1.3 had no watchdog at
 # all. WAN-up hotplug refreshes the fallback list; the panel shows resolver
 # health and a rescue notice.
-PKG_RELEASE:=7
+PKG_RELEASE:=8
 
 PKG_MAINTAINER:=Ace1337z
 PKG_LICENSE:=GPL-3.0-only

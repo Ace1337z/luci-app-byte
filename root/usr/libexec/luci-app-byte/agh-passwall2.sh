@@ -207,6 +207,9 @@ lan_ipv4() {
             ;;
     esac
     [ -n "${l:-}" ] || l="192.168.1.1"
+    # network.lan.ipaddr is stored as a CIDR ("192.168.1.1/24"); AdGuardHome's
+    # bind_hosts and http.address are netip.Addr and reject the prefix.
+    l="${l%%/*}"
     printf '%s' "$l"
 }
 gen_password() {
@@ -260,6 +263,7 @@ ensure_agh_admin() {
     fi
 
     lanip="${AGH_BIND_V4:-$(lan_ipv4)}"
+    lanip="${lanip%%/*}"
     # Free the web port and, more importantly, :53 so the API probe succeeds.
     if agh_running; then
         "${INIT_D}/adguardhome" stop >/dev/null 2>&1 ||
@@ -297,7 +301,16 @@ ensure_agh_admin() {
         return 0
     fi
 
-    body="{\"web\":{\"ip\":\"127.0.0.1\",\"port\":${web_port}},\"dns\":{\"ip\":\"${lanip}\",\"port\":${AGH_PORT}},\"username\":\"${user}\",\"password\":\"${pass}\"}"
+    # The install API *binds* the DNS address it is handed. At this point
+    # dnsmasq still owns :53, so handing it AGH_PORT fails with HTTP 400 and no
+    # admin is created. Probe on a scratch loopback port; only the users: block
+    # is transplanted into the real config afterwards.
+    probe_dns_port="${AGH_SETUP_DNS_PORT:-53535}"
+    while port_busy "$probe_dns_port"; do
+        probe_dns_port=$((probe_dns_port + 1))
+        [ "$probe_dns_port" -le 53545 ] || break
+    done
+    body="{\"web\":{\"ip\":\"127.0.0.1\",\"port\":${web_port}},\"dns\":{\"ip\":\"127.0.0.1\",\"port\":${probe_dns_port}},\"username\":\"${user}\",\"password\":\"${pass}\"}"
     api_out="$(agh_api_configure "$web_port" "$body")"
     api_rc=$?
     if [ "$api_rc" != 0 ]; then
@@ -720,7 +733,8 @@ validate_agh_yaml() {
     [ "$DRY" = 1 ] && { log "  [dry] skip AdGuardHome --check-config"; return 0; }
     [ -x "$AGH_BIN" ] || { warn "$AGH_BIN not executable - cannot validate config"; return 0; }
     mkdir -p "$AGH_WORKDIR" 2>/dev/null || true
-    if ! "$AGH_BIN" --check-config --config "$AGH_YAML" --work-dir "$AGH_WORKDIR" >/dev/null 2>&1; then
+    if ! "$AGH_BIN" --check-config --config "$AGH_YAML" --work-dir "$AGH_WORKDIR" >"$AGH_WORKDIR/.check.log" 2>&1; then
+        warn "$(tail -n 2 "$AGH_WORKDIR/.check.log" 2>/dev/null | tr '\n' ' ')"
         return 1
     fi
     return 0
@@ -795,6 +809,7 @@ step_packages() {
 step_agh_config() {
     log "Step 2/8: AdGuardHome config (:${AGH_PORT}, upstream ${AGH_UPSTREAM1} + ${AGH_UPSTREAM2})"
     [ -n "${AGH_BIND_V4:-}" ] || AGH_BIND_V4="$(lan_ipv4)"
+    AGH_BIND_V4="${AGH_BIND_V4%%/*}"
     [ "$DRY" = 1 ] || mkdir -p "$AGH_DIR" "$AGH_WORKDIR"
     backup "$AGH_YAML"
 

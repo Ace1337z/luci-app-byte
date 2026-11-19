@@ -5,10 +5,8 @@ AdGuard Home + PassWall2 DNS chain on OpenWrt. The successor to the in-firmware
 panel, usable on any OpenWrt device (LuCI + rpcd).
 
 ```
-LAN clients → router :53 → AdGuard Home → Quad9 / Cloudflare DoH
-                                        └→ .lan / .local → dnsmasq :5335
-PassWall2 proxies; it is not in the DNS path.
-nftables (priority -150) redirects hard-coded plaintext DNS back to :53.
+LAN clients → router :53 → AdGuard Home → dnsmasq :54 → PassWall2 DNS
+                                        └→ .lan / .local / .home.arpa
 ```
 
 - **Menu**: Tools → BYTE (AdGuard Home + PassWall2)
@@ -19,21 +17,21 @@ nftables (priority -150) redirects hard-coded plaintext DNS back to :53.
 - **No runtime network fetch of the script**: the upstream installer is
   vendored and pinned (see `VENDORED_PIN=` header in the script), so an
   upstream change can never silently alter the behaviour of the panel.
-- **Site policy**: the panel runs the installer with `IPV6_ENABLE=0`, and the
-  installer installs its own watchdog plus a 2-minute cron entry. The package
-  adds a 60-second procd guard (`/etc/init.d/agh-pw-guard` →
-  `/usr/sbin/agh-pw-guard` → `/usr/sbin/agh-pw-watchdog`), so health checks do
-  not depend on cron being enabled. Listeners stay IPv4 only: DNS on the LAN
-  IPv4 plus `127.0.0.1`, web UI on `<lan-ip>:3000`.
-- **No second DNS owner**: AdGuard Home is the only listener on `:53`; dnsmasq
-  is moved to `5335` and keeps serving DHCP and `.lan`. AdGuard resolves
-  external names over DoH (Quad9 + Cloudflare), independently of PassWall2, so
-  a node restart cannot take resolution down. `fallback_dns` stays empty unless
-  you set `AGH_FALLBACK`, so queries are not silently downgraded to plaintext.
-- **Nothing bypasses filtering**: an nftables chain at priority `-150`, i.e.
-  before PassWall2's `PSW2_NAT`, redirects every other plaintext DNS query
-  from the LAN and the router to AdGuard Home. AdGuard's own UID is exempt so
-  its DoH bootstrap can work.
+- **Site policy**: the panel always runs the installer with `IPV6_ENABLE=0`
+  and `--no-watchdog`. Here that only suppresses the installer's 2-minute cron:
+  the package ships its own 60-second procd guard (`/etc/init.d/agh-pw-guard` →
+  `/usr/sbin/agh-pw-guard` → `/usr/sbin/agh-pw-watchdog`), because 1.1.3 relied
+  on the cron alone and therefore shipped with no watchdog at all. Active
+  listeners stay IPv4 only: DNS on the LAN IPv4 plus `127.0.0.1`, web UI on
+  `<lan-ip>:3000` - a plain `0.0.0.0` makes AdGuardHome open a dual-stack `[::]`
+  socket.
+- **DNS safety net**: AdGuard Home's `fallback_dns` is derived from the live WAN
+  lease (`AGH_FALLBACK=auto`, at most `FALLBACK_MAX` entries) instead of being
+  left empty, and `upstream_timeout` is set to `3s`. Fallbacks are only consulted
+  after the main upstreams fail, so a working tunnel is never bypassed; use
+  `AGH_FALLBACK=off` for strict no-leak behaviour or `AGH_FALLBACK=ip,ip` to pin
+  resolvers. The installer also refuses to leave dnsmasq on the same `:53` as
+  AdGuard Home and probes an uncached name before it reports success.
 - **Web admin**: the install dialog takes a user name and password; both are
   handed to the installer, which creates the account through AdGuardHome's own
   first-run `/control/install/configure` API. A blank password is generated
@@ -47,7 +45,7 @@ nftables (priority -150) redirects hard-coded plaintext DNS back to :53.
 
 | Action | What happens |
 | --- | --- |
-| Install and wire | Installs `adguardhome` + `luci-app-adguardhome` from the configured feed if missing, puts AdGuard Home on `:53`, moves dnsmasq to `:5335` for `.lan`, points AdGuard at Quad9 + Cloudflare DoH, adds the nft redirect chain at priority `-150`, creates the web admin through the first-run API, and installs the watchdog. IPv4-only listeners, validated YAML before it goes live, automatic rollback when `:53` does not answer |
+| Install and wire | Installs `adguardhome` + `luci-app-adguardhome` from the configured feed if missing, moves dnsmasq to :54, points AdGuard at dnsmasq (:54) which forwards to PassWall2 DNS, keeps `.lan`/`.local`/`.home.arpa` local, disables SafeSearch, creates the web admin through the first-run API. IPv4-only DNS and web listeners, WAN-derived `fallback_dns`, 3s upstream timeout, uncached-name probe, and a 60-second health guard that repairs the chain or hands `:53` back to dnsmasq |
 | Dry run first | Runs the same installer with `--dry-run` — shows what would change, changes nothing |
 | Undo wiring | `--uninstall`: dnsmasq back to :53, firewall rules removed, config kept |
 | Purge (with undo) | Passed only if the vendored installer supports `--purge` (feed-based lineage does not; Purge then equals Undo) |
