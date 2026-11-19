@@ -12,13 +12,23 @@ var callMode = rpc.declare({
 	params: [ 'action' ],
 	expect: { '': {} }
 });
+var callGuard = rpc.declare({
+	object: 'byte',
+	method: 'dns_guard',
+	params: [ 'action' ],
+	expect: { '': {} }
+});
 
 return view.extend({
 	load: function() {
-		return L.resolveDefault(callMode('status'), { ok: false });
+		return Promise.all([
+			L.resolveDefault(callMode('status'), { ok: false }),
+			L.resolveDefault(callGuard('status'), { ok: false })
+		]).then(function(r) { return { mode: r[0], guard: r[1] }; });
 	},
 
-	render: function(status) {
+	render: function(data) {
+		var status = data.mode || {}, guard = data.guard || {};
 		var st = {
 			mode: (status && status.ok) ? status.mode : null,
 			active: !!(status && status.ok && status.active),
@@ -110,6 +120,15 @@ return view.extend({
 
 		paint();
 
+		var guardSwitch = E('input', { 'type': 'checkbox', 'class': 'cbi-input-checkbox', 'checked': (guard && guard.guard) ? 'checked' : null });
+		var guardMsg = E('p', { 'class': 'cbi-section-descr' });
+		guardSwitch.addEventListener('change', function() {
+			guardSwitch.disabled = true;
+			callGuard(guardSwitch.checked ? 'on' : 'off').then(function(r) {
+				guardSwitch.disabled = false;
+				guardMsg.textContent = (r && r.ok) ? (r.guard ? _('Bypass blocking is on.') : _('Bypass blocking is off.')) : _('Failed to apply.');
+			});
+		});
 		return E('div', { 'class': 'cbi-map' }, [
 			E('h2', {}, [ _('IPv6 uplink') ]),
 			E('div', { 'class': 'cbi-section' }, [
@@ -120,6 +139,13 @@ return view.extend({
 				E('p', { 'class': 'cbi-section-descr' }, [
 					_('One switch for the whole path: the modem PDP type, the LAN router advertisements and DHCPv6, and dnsmasq AAAA filtering. The IPv6 stack itself is never removed from the kernel.')
 				])
+			]),
+			E('h2', {}, [ _('DNS bypass guard') ]),
+			E('div', { 'class': 'cbi-section' }, [
+				E('p', {}, [ _('Blocks LAN clients that try to skip this router: DNS-over-TLS (853) and QUIC (UDP 443). With it on, Android Private DNS and similar clients must fall back to the router or lose resolution.') ]),
+				E('div', { 'class': 'cbi-value' }, [ E('label', { 'class': 'cbi-value-title' }, [ _('Block bypass') ]), E('div', { 'class': 'cbi-value-field' }, [ guardSwitch ]) ]),
+				E('p', { 'class': 'cbi-section-descr' }, [ _('This cannot block DNS tunnelled inside ordinary HTTPS on 443; that would require breaking TLS. It does stop Private DNS, DoT clients and QUIC-based bypass.') ]),
+				guardMsg
 			])
 		]);
 	}

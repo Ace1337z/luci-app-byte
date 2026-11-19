@@ -4,8 +4,9 @@
 		"read": {
 			"ubus": {
 				"byte": [
-					"status",
-					"log"
+					"log",
+					"dns_guard",
+					"status"
 				],
 				"network.interface.wan": [
 					"status"
@@ -24,11 +25,12 @@
 		"write": {
 			"ubus": {
 				"byte": [
-					"setup",
-					"action",
-					"uninstall",
 					"agh_password",
-					"ipv6_mode"
+					"action",
+					"ipv6_mode",
+					"setup",
+					"uninstall",
+					"dns_guard"
 				]
 			}
 		}

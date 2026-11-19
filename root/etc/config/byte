@@ -1,0 +1,5 @@
+# BYTE panel state.
+#   dns_guard 1 blocks LAN DoT (853) and QUIC (UDP 443) so clients cannot
+#   skip AdGuard Home with Private DNS or a QUIC-based resolver.
+config byte 'main'
+	option dns_guard '0'

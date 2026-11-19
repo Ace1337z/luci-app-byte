@@ -10,6 +10,7 @@
 #   log {lines}       live tail of the current/last setup run + exit status
 #   agh_password      set a new AdGuard Home web admin password
 #   ipv6_mode {action} status|on|off - the one switch for the IPv6 path
+#   dns_guard {action} status|on|off - block DoT/QUIC bypass for LAN clients
 #
 # Contract: rpcd calls us with no argument to list methods, or with
 # "call <method>" and a JSON object on stdin, expecting a JSON object back.
@@ -37,7 +38,8 @@ list_methods() {
 	"action": { "name": "string" },
 	"log": { "lines": "string" },
 	"agh_password": { "password": "string" },
-	"ipv6_mode": { "action": "string" }
+	"ipv6_mode": { "action": "string" },
+	"dns_guard": { "action": "string" }
 }
 EOF
 }
@@ -319,6 +321,26 @@ v6_mode_of() {
 	esac
 }
 
+
+do_dns_guard() {
+	local action
+	json_load "$(cat)"; json_get_var action action
+	case "$action" in
+	on)
+		uci set byte.main.dns_guard='1'; uci commit byte
+		/etc/init.d/byte-dns-guard start >/dev/null 2>&1
+		;;
+	off)
+		uci set byte.main.dns_guard='0'; uci commit byte
+		/etc/init.d/byte-dns-guard stop >/dev/null 2>&1
+		;;
+	esac
+	json_init
+	json_add_boolean ok 1
+	json_add_int guard "$([ "$(uci -q get byte.main.dns_guard)" = 1 ] && echo 1 || echo 0)"
+	json_add_int dot "$(nft list chain inet fw4 byte_dns_guard 2>/dev/null | grep -c 'block DoT')"
+	json_dump
+}
 do_ipv6_mode() {
 	local action mode changed=0 uplink=0 active=0
 	json_load "$(cat)"
@@ -820,6 +842,7 @@ call)
 	log) do_log ;;
 	agh_password) do_agh_password ;;
 	ipv6_mode) do_ipv6_mode ;;
+	dns_guard) do_dns_guard ;;
 	*)
 		json_init
 		json_add_string "error" "unknown method"

@@ -1,0 +1,8 @@
+#!/bin/sh
+# Ship the guard off; the operator enables it in Tools -> IPv6.
+[ -f /etc/config/byte ] || printf "config byte 'main'\n" >/etc/config/byte
+uci -q get byte.main >/dev/null || uci set byte.main=byte
+[ -n "$(uci -q get byte.main.dns_guard)" ] || uci set byte.main.dns_guard='0'
+uci commit byte
+/etc/init.d/byte-dns-guard enable
+exit 0

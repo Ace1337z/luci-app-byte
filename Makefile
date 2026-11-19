@@ -20,6 +20,10 @@ PKG_VERSION:=1.0.4
 # Target Platform and Load Average gone, Firmware Version short ("BYTE v1.1.3")
 # instead of "BYTE 1.1.3 r0-xxxxxxx / LuCI ...". luci-mod-status owns that
 # include file, so it is patched from uci-defaults, not shipped in ./root.
+# r9 (1.1.9): Tools -> IPv6 gets a DNS bypass guard switch: blocks LAN DoT (853)
+# and QUIC (UDP 443) so Private DNS/QUIC resolvers must fall back to the router
+# or lose resolution. Stored in /etc/config/byte, applied by byte-dns-guard, and
+# exposed through the byte rpcd object (dns_guard status|on|off).
 # r8 (1.1.9): two regressions from the 32f101a re-vendor are fixed. network.lan.
 # ipaddr is a CIDR, and AdGuardHome's bind_hosts/http.address reject the prefix,
 # so lan_ipv4() strips it again. The first-run admin API binds the DNS address it
@@ -40,7 +44,7 @@ PKG_VERSION:=1.0.4
 # the panel starts the installer with --no-watchdog, so 1.1.3 had no watchdog at
 # all. WAN-up hotplug refreshes the fallback list; the panel shows resolver
 # health and a rescue notice.
-PKG_RELEASE:=8
+PKG_RELEASE:=9
 
 PKG_MAINTAINER:=Ace1337z
 PKG_LICENSE:=GPL-3.0-only

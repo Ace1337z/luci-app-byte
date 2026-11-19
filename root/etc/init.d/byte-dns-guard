@@ -1,0 +1,27 @@
+#!/bin/sh /etc/rc.common
+# Installs the "block DNS/VPN bypass" nft chain when enabled in UCI.
+# The chain lives in fw4's inet table; toggling means write/remove the fragment
+# and reload the firewall, never a hand edit of the ruleset.
+START=20
+STOP=04
+NFT=/etc/nftables.d/25-byte-dns-guard.nft
+write_rules() {
+	cat >"$NFT" <<'NFT'
+chain byte_dns_guard {
+	type filter hook prerouting priority -140; policy accept;
+	iifname "br-lan" meta l4proto { tcp, udp } th dport 853 counter drop comment "byte: block DoT"
+	iifname "br-lan" udp dport 443 counter drop comment "byte: block QUIC/DoH bypass"
+}
+NFT
+	/etc/init.d/firewall reload >/dev/null 2>&1
+}
+remove_rules() {
+	rm -f "$NFT"
+	nft delete chain inet fw4 byte_dns_guard 2>/dev/null
+	/etc/init.d/firewall reload >/dev/null 2>&1
+}
+start() {
+	[ "$(uci -q get byte.main.dns_guard)" = "1" ] && write_rules || remove_rules
+}
+stop() { remove_rules; }
+restart() { start; }
